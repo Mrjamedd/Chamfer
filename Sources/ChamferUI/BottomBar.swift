@@ -49,6 +49,8 @@ public struct BottomBar: View {
     @State private var isSearching = false
     @State private var isSplit = false
     @State private var closeHovered = false
+    @State private var pressedItem: String?
+    @State private var itemFrames: [String: CGRect] = [:]
     @State private var pointerInRow = false
     @State private var pointerInList = false
     @State private var closeTask: Task<Void, Never>?
@@ -76,6 +78,7 @@ public struct BottomBar: View {
     /// how much further back the pointer must travel to close it again.
     private static let splitZone: CGFloat = 96
     private static let splitHysteresis: CGFloat = 40
+    private static let rowSpace = "chamfer.bar.row"
 
     public init(items: [Item], selection: Binding<String>) {
         self.items = items
@@ -110,7 +113,11 @@ public struct BottomBar: View {
                     .allowsHitTesting(isSearching)
             }
             .frame(width: isSearching ? fieldWidth : collapsedWidth)
-            .barSurface(radius: Self.radius)
+            .barSurface(
+                radius: Self.radius,
+                stroke: isSearching ? Chamfer.Palette.ring : Chamfer.Palette.barStroke,
+                strokeWidth: isSearching ? Chamfer.Palette.ringWidth : 1
+            )
 
             closeCircle
         }
@@ -155,6 +162,9 @@ public struct BottomBar: View {
     static let openCurve = Animation.spring(response: 0.34, dampingFraction: 0.82)
     static let searchCurve = Animation.spring(response: 0.32, dampingFraction: 0.78)
     static let splitCurve = Animation.spring(response: 0.34, dampingFraction: 0.7)
+    /// Quick and slightly loose, so the pill feels like it is being dragged
+    /// rather than driven.
+    static let slideCurve = Animation.spring(response: 0.26, dampingFraction: 0.74)
 
     private var destinations: some View {
         VStack(spacing: 0) {
@@ -379,26 +389,76 @@ public struct BottomBar: View {
         }
     }
 
+    /// Press and hold anywhere on the row and a glass pill forms under the
+    /// pointer; drag and it slides between destinations, committing whichever
+    /// it is over on release. A plain click is the degenerate case of that —
+    /// press and release without travelling — so there is one gesture rather
+    /// than a button and a drag competing for the same pixels.
     private var row: some View {
         HStack(spacing: Chamfer.Space.snug) {
             ForEach(items) { item in
                 BarButton(
                     item: item,
                     isSelected: item.id == selection,
+                    isPressed: item.id == pressedItem,
                     onHover: { inside in
-                        guard inside, !isSearching else { return }
+                        guard inside, !isSearching, pressedItem == nil else { return }
                         let opens = !item.entries.isEmpty || item.showsSearch
                         let next = opens ? item.id : nil
                         guard next != hovered else { return }
                         if next != nil, hovered == nil { Haptics.pop() }
                         withAnimation(Self.openCurve) { hovered = next }
-                    },
-                    action: { selection = item.id }
+                    }
                 )
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.rowSpace)) } action: { frame in
+                    itemFrames[item.id] = frame
+                }
             }
         }
         .padding(.horizontal, Chamfer.Space.snug)
         .frame(height: Self.collapsedHeight)
+        .coordinateSpace(.named(Self.rowSpace))
+        .overlay(alignment: .topLeading) { glassSlider }
+        .gesture(slide)
+    }
+
+    /// The pill itself: real Liquid Glass, sized and placed from the measured
+    /// frame of whichever destination the pointer is over.
+    @ViewBuilder
+    private var glassSlider: some View {
+        if let pressedItem, let frame = itemFrames[pressedItem] {
+            Capsule()
+                .fill(.clear)
+                .glassEffect(.regular.interactive(), in: .capsule)
+                .frame(width: frame.width, height: frame.height)
+                .offset(x: frame.minX, y: frame.minY)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var slide: some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.rowSpace))
+            .onChanged { value in
+                guard !isSearching else { return }
+                let landed = item(at: value.location.x)
+                guard landed != pressedItem else { return }
+                if landed != nil { Haptics.pop() }
+                withAnimation(Self.slideCurve) { pressedItem = landed }
+            }
+            .onEnded { value in
+                guard !isSearching else { return }
+                if let landed = item(at: value.location.x) {
+                    Haptics.commit()
+                    selection = landed
+                }
+                withAnimation(Self.slideCurve) { pressedItem = nil }
+            }
+    }
+
+    /// Which destination sits under this x, by measured frame rather than by
+    /// dividing the row into equal parts — the labels are different widths.
+    private func item(at x: CGFloat) -> String? {
+        itemFrames.first { $0.value.minX <= x && x <= $0.value.maxX }?.key
     }
 
     private struct BarButton: View {
@@ -406,35 +466,42 @@ public struct BottomBar: View {
 
         let item: Item
         let isSelected: Bool
+        let isPressed: Bool
         let onHover: (Bool) -> Void
-        let action: () -> Void
+
+        private var shape: RoundedRectangle {
+            RoundedRectangle(cornerRadius: Chamfer.Radius.medium, style: .continuous)
+        }
 
         var body: some View {
-            Button(action: action) {
-                HStack(spacing: Chamfer.Space.snug - 1) {
-                    Image(systemName: item.symbol)
-                        .font(.system(size: 12, weight: .regular))
-                    Text(item.label)
-                        .font(.system(size: 13, weight: .medium))
-                }
-                // Every destination reads the same weight and colour; the bar
-                // is one slab, not a segmented control. Which page you are on
-                // is obvious from the page itself.
-                .foregroundStyle(Chamfer.Palette.textOnPaper)
-                .padding(.horizontal, Chamfer.Space.regular + 2)
-                .padding(.vertical, Chamfer.Space.tight + 2)
-                // Only the pointer fills a destination. Nothing is marked as
-                // selected: the reference bar has no selected state, and the
-                // page already says which one you are on.
-                .background(isHovered ? Chamfer.Palette.paper.opacity(0.6) : .clear)
-                .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.medium, style: .continuous))
+            HStack(spacing: Chamfer.Space.snug - 1) {
+                Image(systemName: item.symbol)
+                    .font(.system(size: 12, weight: .regular))
+                Text(item.label)
+                    .font(.system(size: 13, weight: .medium))
             }
-            .buttonStyle(.plain)
+            .foregroundStyle(Chamfer.Palette.textOnPaper)
+            .padding(.horizontal, Chamfer.Space.regular + 2)
+            .padding(.vertical, Chamfer.Space.tight + 2)
+            // The glass pill covers the fill while pressed, so the hover tint
+            // would only muddy it.
+            .background(isHovered && !isPressed ? Chamfer.Palette.paper.opacity(0.6) : .clear)
+            .clipShape(shape)
+            // Selection is a soft pink ring rather than a fill: legible at a
+            // glance, quiet enough to sit under the text without competing.
+            .overlay(
+                shape.strokeBorder(
+                    isSelected ? Chamfer.Palette.ring : .clear,
+                    lineWidth: Chamfer.Palette.ringWidth
+                )
+            )
+            .contentShape(shape)
             .onHover { inside in
                 isHovered = inside
                 onHover(inside)
             }
             .animation(Chamfer.Motion.quick, value: isHovered)
+            .animation(Chamfer.Motion.quick, value: isSelected)
         }
     }
 }
@@ -442,12 +509,17 @@ public struct BottomBar: View {
 private extension View {
     /// The bar's material: tan fill, hairline edge, soft float. Shared so the
     /// field and the detached close button read as pieces of the same object.
-    func barSurface(radius: CGFloat, fill: Color = Chamfer.Palette.bar) -> some View {
+    func barSurface(
+        radius: CGFloat,
+        fill: Color = Chamfer.Palette.bar,
+        stroke: Color = Chamfer.Palette.barStroke,
+        strokeWidth: CGFloat = 1
+    ) -> some View {
         background(fill)
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(Chamfer.Palette.barStroke, lineWidth: 1)
+                    .strokeBorder(stroke, lineWidth: strokeWidth)
             )
             .chamferFloat(radius: 20, y: 8, opacity: 0.14)
     }
