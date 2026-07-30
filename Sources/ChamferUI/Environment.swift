@@ -6,10 +6,21 @@ private struct ChamferNowKey: EnvironmentKey {
     static let defaultValue = Date()
 }
 
+private struct ChamferSurfaceKey: EnvironmentKey {
+    static let defaultValue = SurfaceMode.paper
+}
+
 public extension EnvironmentValues {
     /// The "now" every relative timestamp is measured against.
     var chamferNow: Date {
         get { self[ChamferNowKey.self] }
         set { self[ChamferNowKey.self] = newValue }
+    }
+
+    /// The surface the current view is drawn on. `Card` flips this to `.ink`
+    /// while hovered, and every component inside recolours itself.
+    var chamferSurface: SurfaceMode {
+        get { self[ChamferSurfaceKey.self] }
+        set { self[ChamferSurfaceKey.self] = newValue }
     }
 }

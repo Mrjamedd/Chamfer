@@ -8,46 +8,169 @@ public enum Chamfer {}
 // MARK: - Colour
 
 public extension Chamfer {
+    /// A fixed theme rather than an appearance-following one: beige paper,
+    /// dark ink, one pink highlight. The look is the brand, so it does not
+    /// change with the system setting.
     enum Palette {
-        /// Warm graphite and brass: the app is named after a machined edge, so
-        /// the surfaces are metal-neutral and the one accent is a warm metal.
-        public static let canvas = dynamic(light: 0xF6F5F3, dark: 0x171614)
-        public static let surface = dynamic(light: 0xFFFFFF, dark: 0x1F1E1B)
-        public static let sunken = dynamic(light: 0xEFEDE9, dark: 0x131211)
-        public static let stroke = dynamic(light: 0xE2DED7, dark: 0x312F2B)
+        // Paper
+        public static let canvas = rgb(0xE9E0D2)
+        public static let canvasDeep = rgb(0xE0D6C6)
+        public static let paper = rgb(0xF6F1E7)
+        public static let paperSunken = rgb(0xEBE3D5)
+        public static let paperStroke = rgb(0xDCD1BF)
 
-        public static let textPrimary = dynamic(light: 0x1C1A17, dark: 0xF2EFE9)
-        public static let textSecondary = dynamic(light: 0x6B655C, dark: 0x9C948A)
-        public static let textTertiary = dynamic(light: 0x968F84, dark: 0x6F6961)
+        // Ink — the hovered card
+        public static let ink = rgb(0x1A1613)
+        public static let inkSunken = rgb(0x241E19)
+        public static let inkStroke = rgb(0x342C24)
 
-        public static let accent = dynamic(light: 0xA9761F, dark: 0xD9A441)
-        public static let accentSoft = dynamic(light: 0xF3E7CF, dark: 0x38301F)
+        // Type
+        public static let textOnPaper = rgb(0x201B15)
+        public static let textOnPaperSoft = rgb(0x6E6355)
+        public static let textOnPaperFaint = rgb(0x9A8E7D)
+        public static let textOnInk = rgb(0xF7F1E6)
+        public static let textOnInkSoft = rgb(0xB5A896)
+        public static let textOnInkFaint = rgb(0x877B6B)
 
-        public static let positive = dynamic(light: 0x2F7D4F, dark: 0x5FBE86)
-        public static let positiveSoft = dynamic(light: 0xE2F1E7, dark: 0x1B2B21)
-        public static let warning = dynamic(light: 0xA9761F, dark: 0xE0AC4E)
-        public static let danger = dynamic(light: 0xB03A2B, dark: 0xE0705C)
-        public static let dangerSoft = dynamic(light: 0xF7E5E1, dark: 0x2E1D19)
+        // Accents
+        public static let brass = rgb(0xA8752A)
+        public static let brassSoft = rgb(0xF0E4CE)
+        public static let pink = rgb(0xFF7DB4)
+        public static let pinkSoft = rgb(0xF6D2E3)
+        public static let pinkOnInk = rgb(0xFF9CC6)
 
-        /// Builds a colour that resolves per appearance. Only `UInt32` values
-        /// are captured, so the provider stays concurrency-safe.
-        static func dynamic(light: UInt32, dark: UInt32) -> Color {
-            Color(nsColor: NSColor(name: nil) { appearance in
-                let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                return NSColor(rgb: isDark ? dark : light)
-            })
+        public static let positive = rgb(0x3B7A55)
+        public static let positiveSoft = rgb(0xDCEADF)
+        public static let positiveOnInk = rgb(0x7CCB9E)
+        public static let danger = rgb(0xB3402F)
+        public static let dangerSoft = rgb(0xF3DCD6)
+        public static let dangerOnInk = rgb(0xF0806C)
+
+        // Diff tints, which need separate values per surface to stay legible.
+        public static let removedOnPaper = rgb(0xF6E2DC)
+        public static let addedOnPaper = rgb(0xE1EDE2)
+        public static let removedOnInk = rgb(0x30201C)
+        public static let addedOnInk = rgb(0x1D2C22)
+
+        static func rgb(_ value: UInt32) -> Color {
+            Color(
+                .sRGB,
+                red: Double((value >> 16) & 0xFF) / 255,
+                green: Double((value >> 8) & 0xFF) / 255,
+                blue: Double(value & 0xFF) / 255
+            )
         }
     }
 }
 
-private extension NSColor {
-    convenience init(rgb: UInt32) {
-        self.init(
-            srgbRed: Double((rgb >> 16) & 0xFF) / 255,
-            green: Double((rgb >> 8) & 0xFF) / 255,
-            blue: Double(rgb & 0xFF) / 255,
-            alpha: 1
-        )
+// MARK: - Surface
+
+/// Which surface a view is currently sitting on.
+///
+/// Components read this from the environment instead of hardcoding a text
+/// colour, which is what lets a card invert to ink on hover and have
+/// everything inside it follow without any view knowing about hover.
+public enum SurfaceMode: Sendable, Hashable, CaseIterable {
+    case paper
+    case ink
+
+    public var background: Color {
+        switch self {
+        case .paper: Chamfer.Palette.paper
+        case .ink: Chamfer.Palette.ink
+        }
+    }
+
+    public var sunken: Color {
+        switch self {
+        case .paper: Chamfer.Palette.paperSunken
+        case .ink: Chamfer.Palette.inkSunken
+        }
+    }
+
+    public var stroke: Color {
+        switch self {
+        case .paper: Chamfer.Palette.paperStroke
+        case .ink: Chamfer.Palette.inkStroke
+        }
+    }
+
+    public var textPrimary: Color {
+        switch self {
+        case .paper: Chamfer.Palette.textOnPaper
+        case .ink: Chamfer.Palette.textOnInk
+        }
+    }
+
+    public var textSecondary: Color {
+        switch self {
+        case .paper: Chamfer.Palette.textOnPaperSoft
+        case .ink: Chamfer.Palette.textOnInkSoft
+        }
+    }
+
+    public var textFaint: Color {
+        switch self {
+        case .paper: Chamfer.Palette.textOnPaperFaint
+        case .ink: Chamfer.Palette.textOnInkFaint
+        }
+    }
+
+    /// Brass on paper, pink on ink — the accent picks up the shine.
+    public var accent: Color {
+        switch self {
+        case .paper: Chamfer.Palette.brass
+        case .ink: Chamfer.Palette.pinkOnInk
+        }
+    }
+
+    public var accentSoft: Color {
+        switch self {
+        case .paper: Chamfer.Palette.brassSoft
+        case .ink: Chamfer.Palette.inkSunken
+        }
+    }
+
+    public var positive: Color {
+        switch self {
+        case .paper: Chamfer.Palette.positive
+        case .ink: Chamfer.Palette.positiveOnInk
+        }
+    }
+
+    public var positiveSoft: Color {
+        switch self {
+        case .paper: Chamfer.Palette.positiveSoft
+        case .ink: Chamfer.Palette.inkSunken
+        }
+    }
+
+    public var danger: Color {
+        switch self {
+        case .paper: Chamfer.Palette.danger
+        case .ink: Chamfer.Palette.dangerOnInk
+        }
+    }
+
+    public var dangerSoft: Color {
+        switch self {
+        case .paper: Chamfer.Palette.dangerSoft
+        case .ink: Chamfer.Palette.inkSunken
+        }
+    }
+
+    public var removedFill: Color {
+        switch self {
+        case .paper: Chamfer.Palette.removedOnPaper
+        case .ink: Chamfer.Palette.removedOnInk
+        }
+    }
+
+    public var addedFill: Color {
+        switch self {
+        case .paper: Chamfer.Palette.addedOnPaper
+        case .ink: Chamfer.Palette.addedOnInk
+        }
     }
 }
 
@@ -65,15 +188,18 @@ public extension Chamfer {
     }
 
     enum Radius {
-        public static let small: CGFloat = 6
-        public static let medium: CGFloat = 10
-        public static let large: CGFloat = 14
+        public static let small: CGFloat = 8
+        public static let medium: CGFloat = 12
+        public static let large: CGFloat = 18
         public static let pill: CGFloat = 999
     }
 
     enum Motion {
         public static let quick = Animation.easeOut(duration: 0.14)
-        public static let settle = Animation.spring(response: 0.34, dampingFraction: 0.86)
+        /// The lift when a card is hovered.
+        public static let lift = Animation.spring(response: 0.32, dampingFraction: 0.78)
+        /// One pass of the shine across a card.
+        public static let shine = Animation.easeOut(duration: 0.9)
     }
 }
 
@@ -82,7 +208,7 @@ public extension Chamfer {
 public extension Chamfer {
     /// Not named `Type` — `Chamfer.Type` would collide with metatype syntax.
     enum TypeScale {
-        public static let display = Font.system(size: 22, weight: .semibold)
+        public static let display = Font.system(size: 26, weight: .semibold)
         public static let title = Font.system(size: 15, weight: .semibold)
         public static let body = Font.system(size: 13, weight: .regular)
         public static let bodyStrong = Font.system(size: 13, weight: .medium)

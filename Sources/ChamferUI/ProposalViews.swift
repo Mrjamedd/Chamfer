@@ -6,6 +6,8 @@ import SwiftUI
 /// Monospaced on purpose: the user is judging an edit, and proportional type
 /// hides exactly the whitespace and punctuation differences that matter.
 public struct DiffHunkView: View {
+    @Environment(\.chamferSurface) private var surface
+
     private let hunk: Hunk
 
     public init(_ hunk: Hunk) {
@@ -14,8 +16,8 @@ public struct DiffHunkView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            line(marker: "−", text: hunk.before, tint: Chamfer.Palette.danger, background: Chamfer.Palette.dangerSoft)
-            line(marker: "+", text: hunk.after, tint: Chamfer.Palette.positive, background: Chamfer.Palette.positiveSoft)
+            line(marker: "−", text: hunk.before, tint: surface.danger, background: surface.removedFill)
+            line(marker: "+", text: hunk.after, tint: surface.positive, background: surface.addedFill)
         }
         .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous))
     }
@@ -28,7 +30,7 @@ public struct DiffHunkView: View {
                 .frame(width: 10, alignment: .center)
             Text(text)
                 .font(Chamfer.TypeScale.mono)
-                .foregroundStyle(Chamfer.Palette.textPrimary)
+                .foregroundStyle(surface.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -59,38 +61,15 @@ public struct ProposalCard: View {
     public var body: some View {
         Card {
             VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
-                header
+                Header(proposal: proposal, subtitle: subtitle)
                 if let first = proposal.hunks.first {
                     DiffHunkView(first)
                 }
                 if proposal.hunks.count > 1 {
-                    Text("+ \(proposal.hunks.count - 1) more change\(proposal.hunks.count == 2 ? "" : "s") in this note")
-                        .font(Chamfer.TypeScale.caption)
-                        .foregroundStyle(Chamfer.Palette.textTertiary)
+                    Overflow(count: proposal.hunks.count - 1)
                 }
-                actions
+                Actions(onAccept: onAccept, onReject: onReject)
             }
-        }
-    }
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Chamfer.Space.snug) {
-            VStack(alignment: .leading, spacing: Chamfer.Space.hair) {
-                Text(proposal.note.title)
-                    .font(Chamfer.TypeScale.title)
-                    .foregroundStyle(Chamfer.Palette.textPrimary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(subtitle)
-                    .font(Chamfer.TypeScale.caption)
-                    .foregroundStyle(Chamfer.Palette.textTertiary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: Chamfer.Space.snug)
-            Pill(
-                "\(proposal.hunks.count) change\(proposal.hunks.count == 1 ? "" : "s")",
-                tone: .accent
-            )
         }
     }
 
@@ -103,15 +82,60 @@ public struct ProposalCard: View {
         return parts.joined(separator: " · ")
     }
 
-    private var actions: some View {
-        HStack(spacing: Chamfer.Space.snug) {
-            Button("Accept", action: onAccept)
-                .buttonStyle(ChamferButtonStyle(.primary))
-            Button("Reject", action: onReject)
-                .buttonStyle(ChamferButtonStyle(.secondary))
-            Spacer()
-            Button("Open note") {}
-                .buttonStyle(ChamferButtonStyle(.quiet))
+    private struct Header: View {
+        @Environment(\.chamferSurface) private var surface
+
+        let proposal: Proposal
+        let subtitle: String
+
+        var body: some View {
+            HStack(alignment: .firstTextBaseline, spacing: Chamfer.Space.snug) {
+                VStack(alignment: .leading, spacing: Chamfer.Space.hair) {
+                    Text(proposal.note.title)
+                        .font(Chamfer.TypeScale.title)
+                        .foregroundStyle(surface.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(subtitle)
+                        .font(Chamfer.TypeScale.caption)
+                        .foregroundStyle(surface.textFaint)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: Chamfer.Space.snug)
+                Pill(
+                    "\(proposal.hunks.count) change\(proposal.hunks.count == 1 ? "" : "s")",
+                    tone: .accent
+                )
+            }
+        }
+    }
+
+    private struct Overflow: View {
+        @Environment(\.chamferSurface) private var surface
+
+        let count: Int
+
+        var body: some View {
+            Text("+ \(count) more change\(count == 1 ? "" : "s") in this note")
+                .font(Chamfer.TypeScale.caption)
+                .foregroundStyle(surface.textFaint)
+        }
+    }
+
+    private struct Actions: View {
+        let onAccept: () -> Void
+        let onReject: () -> Void
+
+        var body: some View {
+            HStack(spacing: Chamfer.Space.snug) {
+                Button("Accept", action: onAccept)
+                    .buttonStyle(ChamferButtonStyle(.primary))
+                Button("Reject", action: onReject)
+                    .buttonStyle(ChamferButtonStyle(.secondary))
+                Spacer()
+                Button("Open note") {}
+                    .buttonStyle(ChamferButtonStyle(.quiet))
+            }
         }
     }
 }

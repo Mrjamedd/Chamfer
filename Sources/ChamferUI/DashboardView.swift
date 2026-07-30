@@ -14,47 +14,43 @@ public struct DashboardView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().overlay(Chamfer.Palette.stroke)
-            ScrollView {
-                VStack(alignment: .leading, spacing: Chamfer.Space.loose) {
-                    RunStateBanner(state.runState)
-                    HStack(alignment: .top, spacing: Chamfer.Space.loose) {
-                        queue
-                        rail.frame(width: 300)
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: Chamfer.Space.loose) {
+                header
+                RunStateBanner(state.runState)
+                HStack(alignment: .top, spacing: Chamfer.Space.loose) {
+                    queue
+                    rail.frame(width: 300)
                 }
-                .padding(Chamfer.Space.loose)
             }
+            .padding(Chamfer.Space.section)
         }
         .background(Chamfer.Palette.canvas)
     }
 
     // MARK: - Header
 
+    /// Sits directly on the canvas with no surface of its own, so the cards
+    /// below are the only things floating.
     private var header: some View {
-        HStack(spacing: Chamfer.Space.regular) {
-            VStack(alignment: .leading, spacing: Chamfer.Space.hair) {
+        HStack(alignment: .bottom, spacing: Chamfer.Space.regular) {
+            VStack(alignment: .leading, spacing: Chamfer.Space.tight) {
                 Text("Chamfer")
                     .font(Chamfer.TypeScale.display)
-                    .foregroundStyle(Chamfer.Palette.textPrimary)
+                    .foregroundStyle(Chamfer.Palette.textOnPaper)
                 Text(folderSummary)
-                    .font(Chamfer.TypeScale.caption)
-                    .foregroundStyle(Chamfer.Palette.textTertiary)
+                    .font(Chamfer.TypeScale.body)
+                    .foregroundStyle(Chamfer.Palette.textOnPaperSoft)
             }
             Spacer()
             if case let .sweeping(completed, total) = state.runState {
                 ProgressView(value: Double(completed), total: Double(total))
                     .progressViewStyle(.linear)
-                    .tint(Chamfer.Palette.accent)
+                    .tint(Chamfer.Palette.brass)
                     .frame(width: 140)
             }
             RunStateBadge(state.runState)
         }
-        .padding(.horizontal, Chamfer.Space.loose)
-        .padding(.vertical, Chamfer.Space.regular)
-        .background(Chamfer.Palette.surface)
     }
 
     private var folderSummary: String {
@@ -70,7 +66,7 @@ public struct DashboardView: View {
         VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
             SectionHeader("Pending review", count: state.pendingProposals.count)
             if state.folders.isEmpty {
-                Card {
+                Card(interactive: false) {
                     EmptyState(
                         symbol: "folder.badge.plus",
                         title: "Point Chamfer at a folder",
@@ -78,11 +74,11 @@ public struct DashboardView: View {
                     )
                 }
             } else if state.pendingProposals.isEmpty {
-                Card {
+                Card(interactive: false) {
                     EmptyState(
-                        symbol: "checkmark.seal",
-                        title: "Nothing to review",
-                        message: "Your notes are tidy. Chamfer will queue anything it wants to rewrite here."
+                        symbol: emptyQueueSymbol,
+                        title: emptyQueueTitle,
+                        message: emptyQueueMessage
                     )
                 }
             } else {
@@ -96,6 +92,27 @@ public struct DashboardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    // The resting state has to tell the truth about *why* it is empty —
+    // "your notes are tidy" is a lie when rewrites are switched off.
+    private var rewritesDisabled: Bool {
+        if case .rewritingUnavailable = state.runState { return true }
+        return false
+    }
+
+    private var emptyQueueSymbol: String {
+        rewritesDisabled ? "wand.and.stars.inverse" : "checkmark.seal"
+    }
+
+    private var emptyQueueTitle: String {
+        rewritesDisabled ? "No rewrites to review" : "Nothing to review"
+    }
+
+    private var emptyQueueMessage: String {
+        rewritesDisabled
+            ? "Formatting rules are still running on every save. Turn Apple Intelligence back on and Chamfer will start suggesting rewrites again."
+            : "Your notes are tidy. Chamfer will queue anything it wants to rewrite here."
+    }
+
     // MARK: - Rail
 
     private var rail: some View {
@@ -104,9 +121,7 @@ public struct DashboardView: View {
                 SectionHeader("Watching")
                 Card(padding: Chamfer.Space.regular) {
                     if state.folders.isEmpty {
-                        Text("No folders yet.")
-                            .font(Chamfer.TypeScale.body)
-                            .foregroundStyle(Chamfer.Palette.textTertiary)
+                        Placeholder("No folders yet.")
                     } else {
                         VStack(spacing: Chamfer.Space.regular) {
                             ForEach(state.folders) { folder in
@@ -121,9 +136,7 @@ public struct DashboardView: View {
                 SectionHeader("Cleaned automatically")
                 Card(padding: Chamfer.Space.regular) {
                     if state.recentlyCleaned.isEmpty {
-                        Text("Nothing yet today.")
-                            .font(Chamfer.TypeScale.body)
-                            .foregroundStyle(Chamfer.Palette.textTertiary)
+                        Placeholder("Nothing yet today.")
                     } else {
                         VStack(spacing: Chamfer.Space.regular) {
                             ForEach(state.recentlyCleaned) { record in
@@ -139,8 +152,25 @@ public struct DashboardView: View {
 
 // MARK: - Rows
 
+private struct Placeholder: View {
+    @Environment(\.chamferSurface) private var surface
+
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(Chamfer.TypeScale.body)
+            .foregroundStyle(surface.textFaint)
+    }
+}
+
 public struct FolderRow: View {
     @Environment(\.chamferNow) private var now
+    @Environment(\.chamferSurface) private var surface
 
     private let folder: WatchedFolder
 
@@ -152,17 +182,17 @@ public struct FolderRow: View {
         HStack(alignment: .top, spacing: Chamfer.Space.snug) {
             Image(systemName: folder.isReachable ? "folder" : "folder.badge.questionmark")
                 .font(.system(size: 12))
-                .foregroundStyle(folder.isReachable ? Chamfer.Palette.textTertiary : Chamfer.Palette.danger)
+                .foregroundStyle(folder.isReachable ? surface.textFaint : surface.danger)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: Chamfer.Space.hair) {
                 Text(folder.url.lastPathComponent)
                     .font(Chamfer.TypeScale.bodyStrong)
-                    .foregroundStyle(Chamfer.Palette.textPrimary)
+                    .foregroundStyle(surface.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(detail)
                     .font(Chamfer.TypeScale.caption)
-                    .foregroundStyle(folder.isReachable ? Chamfer.Palette.textTertiary : Chamfer.Palette.danger)
+                    .foregroundStyle(folder.isReachable ? surface.textFaint : surface.danger)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -180,6 +210,7 @@ public struct FolderRow: View {
 
 public struct CleanupRow: View {
     @Environment(\.chamferNow) private var now
+    @Environment(\.chamferSurface) private var surface
 
     private let record: CleanupRecord
 
@@ -191,17 +222,17 @@ public struct CleanupRow: View {
         HStack(alignment: .top, spacing: Chamfer.Space.snug) {
             Image(systemName: "checkmark")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Chamfer.Palette.positive)
+                .foregroundStyle(surface.positive)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: Chamfer.Space.hair) {
                 Text(record.note.title)
                     .font(Chamfer.TypeScale.bodyStrong)
-                    .foregroundStyle(Chamfer.Palette.textPrimary)
+                    .foregroundStyle(surface.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text("\(record.rules.count) rule\(record.rules.count == 1 ? "" : "s") · \(RelativeTime.string(record.appliedAt, since: now))")
                     .font(Chamfer.TypeScale.caption)
-                    .foregroundStyle(Chamfer.Palette.textTertiary)
+                    .foregroundStyle(surface.textFaint)
             }
             Spacer(minLength: 0)
         }

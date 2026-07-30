@@ -13,26 +13,11 @@ struct ComponentCatalog: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Chamfer.Space.section) {
                 specimen("Palette") { palette }
-                specimen("Pills") {
-                    HStack(spacing: Chamfer.Space.snug) {
-                        Pill("Neutral")
-                        Pill("Accent", symbol: "sparkles", tone: .accent)
-                        Pill("Positive", symbol: "checkmark", tone: .positive)
-                        Pill("Danger", symbol: "xmark", tone: .danger)
-                    }
-                }
-                specimen("Buttons") {
-                    HStack(spacing: Chamfer.Space.snug) {
-                        Button("Primary") {}.buttonStyle(ChamferButtonStyle(.primary))
-                        Button("Secondary") {}.buttonStyle(ChamferButtonStyle(.secondary))
-                        Button("Quiet") {}.buttonStyle(ChamferButtonStyle(.quiet))
-                    }
-                }
+                specimen("Surfaces — paper and ink") { surfaces }
                 specimen("Run state badges") {
                     HStack(spacing: Chamfer.Space.snug) {
                         RunStateBadge(.idle)
                         RunStateBadge(.sweeping(completed: 137, total: 412))
-                        RunStateBadge(.rewriting(noteTitle: "Standup"))
                         RunStateBadge(.paused)
                         RunStateBadge(.rewritingUnavailable(reason: ""))
                         RunStateBadge(.failed(message: ""))
@@ -48,12 +33,7 @@ struct ComponentCatalog: View {
                         ))
                     }
                 }
-                specimen("Diff hunk") {
-                    if let hunk = typical.proposals.first?.hunks.first {
-                        DiffHunkView(hunk)
-                    }
-                }
-                specimen("Proposal card — one change") {
+                specimen("Proposal card — hover it") {
                     if let proposal = typical.proposals.last {
                         ProposalCard(proposal)
                     }
@@ -67,13 +47,12 @@ struct ComponentCatalog: View {
                     Card(padding: Chamfer.Space.regular) {
                         VStack(spacing: Chamfer.Space.regular) {
                             ForEach(unreachable.folders) { FolderRow($0) }
-                            Divider().overlay(Chamfer.Palette.stroke)
                             ForEach(typical.recentlyCleaned) { CleanupRow($0) }
                         }
                     }
                 }
                 specimen("Empty state") {
-                    Card {
+                    Card(interactive: false) {
                         EmptyState(
                             symbol: "checkmark.seal",
                             title: "Nothing to review",
@@ -82,22 +61,58 @@ struct ComponentCatalog: View {
                     }
                 }
             }
-            .padding(Chamfer.Space.loose)
-            .frame(maxWidth: 760, alignment: .leading)
+            .padding(Chamfer.Space.section)
+            .frame(maxWidth: 780, alignment: .leading)
         }
         .frame(maxWidth: .infinity)
         .background(Chamfer.Palette.canvas)
     }
 
+    /// The same components on both surfaces, since every one of them has to
+    /// survive a card inverting under it.
+    private var surfaces: some View {
+        HStack(spacing: Chamfer.Space.regular) {
+            ForEach(SurfaceMode.allCases, id: \.self) { mode in
+                VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
+                    HStack(spacing: Chamfer.Space.snug) {
+                        Pill("Neutral")
+                        Pill("Accent", symbol: "sparkles", tone: .accent)
+                    }
+                    HStack(spacing: Chamfer.Space.snug) {
+                        Pill("Positive", symbol: "checkmark", tone: .positive)
+                        Pill("Danger", symbol: "xmark", tone: .danger)
+                    }
+                    HStack(spacing: Chamfer.Space.snug) {
+                        Button("Primary") {}.buttonStyle(ChamferButtonStyle(.primary))
+                        Button("Secondary") {}.buttonStyle(ChamferButtonStyle(.secondary))
+                        Button("Quiet") {}.buttonStyle(ChamferButtonStyle(.quiet))
+                    }
+                    if let hunk = typical.proposals.first?.hunks.first {
+                        DiffHunkView(hunk)
+                    }
+                }
+                .environment(\.chamferSurface, mode)
+                .padding(Chamfer.Space.roomy)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(mode.background)
+                .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous)
+                        .strokeBorder(mode.stroke, lineWidth: 1)
+                )
+            }
+        }
+    }
+
     private var palette: some View {
         let swatches: [(String, Color)] = [
             ("canvas", Chamfer.Palette.canvas),
-            ("surface", Chamfer.Palette.surface),
-            ("sunken", Chamfer.Palette.sunken),
-            ("stroke", Chamfer.Palette.stroke),
-            ("text", Chamfer.Palette.textPrimary),
-            ("text 2", Chamfer.Palette.textSecondary),
-            ("accent", Chamfer.Palette.accent),
+            ("paper", Chamfer.Palette.paper),
+            ("sunken", Chamfer.Palette.paperSunken),
+            ("stroke", Chamfer.Palette.paperStroke),
+            ("ink", Chamfer.Palette.ink),
+            ("brass", Chamfer.Palette.brass),
+            ("pink", Chamfer.Palette.pink),
             ("positive", Chamfer.Palette.positive),
             ("danger", Chamfer.Palette.danger)
         ]
@@ -106,14 +121,14 @@ struct ComponentCatalog: View {
                 VStack(spacing: Chamfer.Space.tight) {
                     RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
                         .fill(color)
-                        .frame(width: 56, height: 40)
+                        .frame(width: 58, height: 42)
                         .overlay(
                             RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
-                                .strokeBorder(Chamfer.Palette.stroke, lineWidth: 1)
+                                .strokeBorder(Chamfer.Palette.paperStroke, lineWidth: 1)
                         )
                     Text(name)
                         .font(Chamfer.TypeScale.caption)
-                        .foregroundStyle(Chamfer.Palette.textTertiary)
+                        .foregroundStyle(Chamfer.Palette.textOnPaperFaint)
                 }
             }
         }
