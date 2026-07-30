@@ -47,6 +47,7 @@ public struct BottomBar: View {
     @Binding private var selection: String
     @State private var hovered: String?
     @State private var isSearching = false
+    @State private var isSplit = false
     @State private var query = ""
     @FocusState private var searchFocused: Bool
 
@@ -59,8 +60,12 @@ public struct BottomBar: View {
     /// Close to the width of the destination row, so the status column lands
     /// near the slab's right edge instead of stranding empty space.
     private static let listWidth: CGFloat = 262
-    /// How far the bar rises when it becomes a search field.
-    private static let searchLift: CGFloat = 150
+    /// How far the bar rises when it becomes a search field, and how wide the
+    /// field is once it gets there.
+    private static let searchLift: CGFloat = 360
+    private static let searchWidth: CGFloat = 420
+    /// The right-hand strip of the field that splits the close button off.
+    private static let splitZone: CGFloat = 96
 
     public init(items: [Item], selection: Binding<String>) {
         self.items = items
@@ -80,18 +85,13 @@ public struct BottomBar: View {
     private var slab: some View {
         Group {
             if isSearching {
-                searchBubble
+                searchLayer
             } else {
                 destinations
+                    .barSurface(radius: Self.radius)
+                    .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
             }
         }
-        .background(Chamfer.Palette.bar)
-        .clipShape(RoundedRectangle(cornerRadius: Self.radius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Self.radius, style: .continuous)
-                .strokeBorder(Chamfer.Palette.barStroke, lineWidth: 1)
-        )
-        .chamferFloat(radius: 20, y: 8, opacity: 0.14)
         .fixedSize()
         // Searching lifts the bar clear of the bottom edge so the field sits
         // where you are looking rather than at the foot of the window.
@@ -100,7 +100,8 @@ public struct BottomBar: View {
             if !inside, !isSearching { hovered = nil }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.84), value: hovered)
-        .animation(.spring(response: 0.42, dampingFraction: 0.8), value: isSearching)
+        .animation(.spring(response: 0.48, dampingFraction: 0.76), value: isSearching)
+        .animation(.spring(response: 0.32, dampingFraction: 0.7), value: isSplit)
     }
 
     private var destinations: some View {
@@ -126,7 +127,50 @@ public struct BottomBar: View {
 
     // MARK: - Search
 
-    private var searchBubble: some View {
+    /// The field, and — once the pointer reaches the right-hand end — a close
+    /// button that detaches from it into its own circle. The pair always
+    /// occupies the same total width, so the field gives up exactly the space
+    /// the circle takes and nothing jumps sideways.
+    private var searchLayer: some View {
+        HStack(spacing: isSplit ? Chamfer.Space.snug + 2 : 0) {
+            field
+                .frame(width: fieldWidth, height: Self.collapsedHeight)
+                .barSurface(radius: Self.radius)
+            if isSplit {
+                Button(action: endSearch) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Chamfer.Palette.textOnPaper)
+                        .frame(width: Self.collapsedHeight, height: Self.collapsedHeight)
+                }
+                .buttonStyle(.plain)
+                .barSurface(radius: Self.collapsedHeight / 2)
+                .transition(.scale(scale: 0.4).combined(with: .opacity))
+            }
+        }
+        .frame(width: Self.searchWidth, alignment: .leading)
+        .contentShape(Rectangle())
+        .onContinuousHover { hover in
+            switch hover {
+            case let .active(location):
+                let near = location.x > Self.searchWidth - Self.splitZone
+                if near, !isSplit { Haptics.pop() }
+                isSplit = near
+            case .ended:
+                isSplit = false
+            }
+        }
+        .onExitCommand(perform: endSearch)
+        .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
+    }
+
+    private var fieldWidth: CGFloat {
+        isSplit
+            ? Self.searchWidth - Self.collapsedHeight - (Chamfer.Space.snug + 2)
+            : Self.searchWidth
+    }
+
+    private var field: some View {
         HStack(spacing: Chamfer.Space.regular) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 13, weight: .medium))
@@ -136,17 +180,9 @@ public struct BottomBar: View {
                 .font(.system(size: 14))
                 .foregroundStyle(Chamfer.Palette.textOnPaper)
                 .focused($searchFocused)
-                .onSubmit { searchFocused = true }
-            Button(action: endSearch) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Chamfer.Palette.textOnPaperSoft)
-            }
-            .buttonStyle(.plain)
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, Chamfer.Space.roomy)
-        .frame(width: 420, height: Self.collapsedHeight)
-        .onExitCommand(perform: endSearch)
     }
 
     private func beginSearch() {
@@ -161,6 +197,7 @@ public struct BottomBar: View {
         Haptics.commit()
         searchFocused = false
         query = ""
+        isSplit = false
         isSearching = false
     }
 
@@ -301,6 +338,20 @@ public struct BottomBar: View {
             }
             .animation(Chamfer.Motion.quick, value: isHovered)
         }
+    }
+}
+
+private extension View {
+    /// The bar's material: tan fill, hairline edge, soft float. Shared so the
+    /// field and the detached close button read as pieces of the same object.
+    func barSurface(radius: CGFloat) -> some View {
+        background(Chamfer.Palette.bar)
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(Chamfer.Palette.barStroke, lineWidth: 1)
+            )
+            .chamferFloat(radius: 20, y: 8, opacity: 0.14)
     }
 }
 
