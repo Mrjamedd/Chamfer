@@ -68,6 +68,7 @@ struct GalleryRootView: View {
         switch phase {
         case .hidden:
             guard x <= 24 else { return }
+            Haptics.pop()
             withAnimation(.spring(response: 0.26, dampingFraction: 0.55)) {
                 phase = .peeking
             }
@@ -105,6 +106,7 @@ struct GalleryRootView: View {
                     Color.black.opacity(0.001)
                         .contentShape(Rectangle())
                         .onTapGesture {
+                            Haptics.commit()
                             withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
                                 phase = .open
                             }

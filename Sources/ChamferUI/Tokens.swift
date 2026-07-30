@@ -20,6 +20,10 @@ public extension Chamfer {
         public static let paper = rgb(0xFFFBF5)
         public static let paperSunken = rgb(0xF2E7D4)
         public static let paperStroke = rgb(0xE6D9C1)
+        /// The bar sits deeper than the canvas so it reads as a distinct
+        /// object rather than as part of the background.
+        public static let bar = rgb(0xE8DBC4)
+        public static let barStroke = rgb(0xDCCBAE)
 
         // The note page: the lightest surface, with black type on it.
         public static let page = rgb(0xFFFCF7)

@@ -27,8 +27,26 @@ public struct DashboardView: View {
     private var items: [BottomBar.Item] {
         [
             .init(id: Tab.notes, symbol: "doc.text", label: "Notes"),
-            .init(id: Tab.review, symbol: "checkmark.circle", label: "Review"),
-            .init(id: Tab.models, symbol: "cpu", label: "Models")
+            .init(
+                id: Tab.review,
+                symbol: "checkmark.circle",
+                label: "Review",
+                entries: state.pendingProposals.prefix(6).map { proposal in
+                    .init(
+                        id: proposal.id.uuidString,
+                        title: proposal.note.title,
+                        detail: "\(proposal.hunks.count) change\(proposal.hunks.count == 1 ? "" : "s")"
+                    )
+                }
+            ),
+            .init(
+                id: Tab.models,
+                symbol: "cpu",
+                label: "Models",
+                entries: Backend.all(runState: state.runState).map {
+                    .init(id: $0.name, title: $0.name, detail: $0.status)
+                }
+            )
         ]
     }
 
@@ -146,13 +164,52 @@ private struct ReviewPage: View {
     }
 }
 
+/// A rewrite backend and whether it can run right now. One source for both the
+/// Models page and the bar's hover list, so the two can never disagree.
+struct Backend: Identifiable {
+    let name: String
+    let status: String
+    let tone: Pill.Tone
+    let detail: String
+
+    var id: String { name }
+
+    static func all(runState: RunState) -> [Backend] {
+        var appleUnavailableReason: String? {
+            if case let .rewritingUnavailable(reason) = runState { return reason }
+            return nil
+        }
+        return [
+            Backend(
+                name: "Apple Foundation Models",
+                status: appleUnavailableReason == nil ? "Active" : "Unavailable",
+                tone: appleUnavailableReason == nil ? .positive : .danger,
+                detail: appleUnavailableReason
+                    ?? "The on-device model built into macOS. Nothing to download, nothing leaves the Mac."
+            ),
+            Backend(
+                name: "Ollama",
+                status: "Not configured",
+                tone: .neutral,
+                detail: "Point Chamfer at a local Ollama server to use a larger model, if this Mac has the memory for it."
+            ),
+            Backend(
+                name: "Bundled MLX",
+                status: "Not installed",
+                tone: .neutral,
+                detail: "Ships a small model inside the app. Works without Apple Intelligence, at the cost of a large download."
+            )
+        ]
+    }
+}
+
 /// Which local model does the rewriting, and whether it can right now.
 private struct ModelsPage: View {
     let runState: RunState
 
     var body: some View {
         PageScroll(title: "Models") {
-            ForEach(backends, id: \.name) { backend in
+            ForEach(Backend.all(runState: runState)) { backend in
                 VStack(alignment: .leading, spacing: Chamfer.Space.tight) {
                     HStack(spacing: Chamfer.Space.snug) {
                         Text(backend.name)
@@ -168,35 +225,6 @@ private struct ModelsPage: View {
                 .padding(.bottom, Chamfer.Space.loose)
             }
         }
-    }
-
-    private var appleUnavailableReason: String? {
-        if case let .rewritingUnavailable(reason) = runState { return reason }
-        return nil
-    }
-
-    private var backends: [(name: String, status: String, tone: Pill.Tone, detail: String)] {
-        [
-            (
-                "Apple Foundation Models",
-                appleUnavailableReason == nil ? "Active" : "Unavailable",
-                appleUnavailableReason == nil ? .positive : .danger,
-                appleUnavailableReason
-                    ?? "The on-device model built into macOS. Nothing to download, nothing leaves the Mac."
-            ),
-            (
-                "Ollama",
-                "Not configured",
-                .neutral,
-                "Point Chamfer at a local Ollama server to use a larger model, if this Mac has the memory for it."
-            ),
-            (
-                "Bundled MLX",
-                "Not installed",
-                .neutral,
-                "Ships a small model inside the app. Works without Apple Intelligence, at the cost of a large download."
-            )
-        ]
     }
 }
 
