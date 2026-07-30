@@ -39,11 +39,13 @@ public struct BottomBar: View {
 
     private let items: [Item]
 
-    private static let collapsedHeight: CGFloat = 62
-    private static let radius: CGFloat = 22
+    // Proportioned off the reference: the slab is a little under four times
+    // the cap height of its labels, not six.
+    private static let collapsedHeight: CGFloat = 40
+    private static let radius: CGFloat = 14
     /// Close to the width of the destination row, so the status column lands
     /// near the slab's right edge instead of stranding empty space.
-    private static let listWidth: CGFloat = 300
+    private static let listWidth: CGFloat = 262
 
     public init(items: [Item], selection: Binding<String>) {
         self.items = items
@@ -93,8 +95,8 @@ public struct BottomBar: View {
         return item.entries
     }
 
-    /// Menu density: 13pt, rows about 22pt tall, a rounded highlight under the
-    /// pointer. The list is part of the bar, not a panel with its own voice.
+    /// Menu density: 12pt, 20pt rows, a rounded highlight under the pointer.
+    /// The list is part of the bar, not a panel with its own voice.
     private func list(_ entries: [Entry]) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             ForEach(entries) { entry in
@@ -115,19 +117,19 @@ public struct BottomBar: View {
         var body: some View {
             HStack(alignment: .firstTextBaseline, spacing: Chamfer.Space.regular) {
                 Text(entry.title)
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                     .foregroundStyle(Chamfer.Palette.textOnPaper)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: Chamfer.Space.snug)
                 Text(entry.detail)
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                     .foregroundStyle(Chamfer.Palette.textOnPaperSoft)
                     .lineLimit(1)
             }
             .padding(.horizontal, Chamfer.Space.snug)
             .padding(.vertical, Chamfer.Space.tight - 1)
-            .frame(height: 22)
+            .frame(height: 20)
             .background(isHovered ? Chamfer.Palette.paper.opacity(0.75) : .clear)
             .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small - 2, style: .continuous))
             .contentShape(Rectangle())
@@ -165,18 +167,18 @@ public struct BottomBar: View {
 
         var body: some View {
             Button(action: action) {
-                HStack(spacing: Chamfer.Space.snug + 1) {
+                HStack(spacing: Chamfer.Space.snug - 1) {
                     Image(systemName: item.symbol)
-                        .font(.system(size: 14, weight: .regular))
+                        .font(.system(size: 12, weight: .regular))
                     Text(item.label)
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                 }
                 // Every destination reads the same weight and colour; the bar
                 // is one slab, not a segmented control. Which page you are on
                 // is obvious from the page itself.
                 .foregroundStyle(Chamfer.Palette.textOnPaper)
-                .padding(.horizontal, Chamfer.Space.roomy)
-                .padding(.vertical, Chamfer.Space.regular)
+                .padding(.horizontal, Chamfer.Space.regular + 2)
+                .padding(.vertical, Chamfer.Space.tight + 2)
                 // Only the pointer fills a destination. Nothing is marked as
                 // selected: the reference bar has no selected state, and the
                 // page already says which one you are on.
