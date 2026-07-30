@@ -29,9 +29,21 @@ public extension View {
         modifier(HoverLift(isActive: isActive, lift: lift))
     }
 
-    /// The app's one hover signal: a faint pink ring traced around the
-    /// surface. Every interactive thing uses this and nothing else does, so
-    /// the ring means exactly one thing wherever it appears.
+    /// A faint pink ring traced around a surface.
+    ///
+    /// The two surfaces the app is built from — the page and the bar — wear it
+    /// permanently, which is where the colour comes from. Everything
+    /// interactive inside them wears it only under the pointer. Same ring
+    /// either way, so it always means "this is a thing", never anything else.
+    func chamferRing(radius: CGFloat) -> some View {
+        overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(Chamfer.Palette.ring, lineWidth: Chamfer.Palette.ringWidth)
+                .allowsHitTesting(false)
+        )
+    }
+
+    /// The same ring, shown only while the pointer is on the surface.
     func chamferHoverRing(_ isActive: Bool, radius: CGFloat) -> some View {
         overlay(
             RoundedRectangle(cornerRadius: radius, style: .continuous)

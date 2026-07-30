@@ -49,7 +49,6 @@ public struct BottomBar: View {
     @State private var isSearching = false
     @State private var isSplit = false
     @State private var closeHovered = false
-    @State private var slabHovered = false
     @State private var pressedItem: String?
     @State private var itemFrames: [String: CGRect] = [:]
     @State private var pointerInRow = false
@@ -115,8 +114,7 @@ public struct BottomBar: View {
             }
             .frame(width: isSearching ? fieldWidth : collapsedWidth)
             .barSurface(radius: Self.radius)
-            .chamferHoverRing(slabHovered, radius: Self.radius)
-            .onHover { slabHovered = $0 }
+            .chamferRing(radius: Self.radius)
 
             closeCircle
         }
@@ -251,7 +249,12 @@ public struct BottomBar: View {
             )
             .frame(width: isSplit ? Self.collapsedHeight : 0)
             .opacity(isSplit ? 1 : 0)
-            .chamferHoverRingCircle(closeHovered)
+            .overlay(
+                Circle()
+                    .strokeBorder(Chamfer.Palette.ring, lineWidth: Chamfer.Palette.ringWidth)
+                    .opacity(isSplit ? 1 : 0)
+                    .allowsHitTesting(false)
+            )
             .contentShape(Circle())
             .onHover { inside in
                 guard isSplit else { return }

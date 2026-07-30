@@ -91,6 +91,7 @@ public struct DashboardView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Chamfer.Palette.page)
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .chamferRing(radius: 24)
             .chamferFloat()
             .scaleEffect(closeHovered ? 0.975 : 1)
             .animation(.spring(response: 0.38, dampingFraction: 0.85), value: closeHovered)
