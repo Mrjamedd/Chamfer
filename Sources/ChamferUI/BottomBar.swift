@@ -41,7 +41,9 @@ public struct BottomBar: View {
 
     private static let collapsedHeight: CGFloat = 62
     private static let radius: CGFloat = 22
-    private static let listWidth: CGFloat = 250
+    /// Close to the width of the destination row, so the status column lands
+    /// near the slab's right edge instead of stranding empty space.
+    private static let listWidth: CGFloat = 300
 
     public init(items: [Item], selection: Binding<String>) {
         self.items = items
@@ -63,7 +65,7 @@ public struct BottomBar: View {
             if let entries = expandedEntries {
                 list(entries)
                 Rectangle()
-                    .fill(Chamfer.Palette.barStroke)
+                    .fill(Chamfer.Palette.barStroke.opacity(0.7))
                     .frame(height: 1)
                     .padding(.horizontal, Chamfer.Space.regular)
             }
@@ -91,30 +93,46 @@ public struct BottomBar: View {
         return item.entries
     }
 
-    /// Same type as the bar's own labels, one step down — the list is part of
-    /// the bar, not a popover with its own voice.
+    /// Menu density: 13pt, rows about 22pt tall, a rounded highlight under the
+    /// pointer. The list is part of the bar, not a panel with its own voice.
     private func list(_ entries: [Entry]) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 1) {
             ForEach(entries) { entry in
-                HStack(alignment: .firstTextBaseline, spacing: Chamfer.Space.regular) {
-                    Text(entry.title)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(Chamfer.Palette.textOnPaper)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: Chamfer.Space.snug)
-                    Text(entry.detail)
-                        .font(.system(size: 14, weight: .regular))
-                        .foregroundStyle(Chamfer.Palette.textOnPaperSoft)
-                        .lineLimit(1)
-                }
-                .padding(.vertical, Chamfer.Space.tight + 1)
+                ListRow(entry: entry)
             }
         }
         .frame(width: Self.listWidth, alignment: .leading)
-        .padding(.horizontal, Chamfer.Space.roomy)
-        .padding(.top, Chamfer.Space.regular)
-        .padding(.bottom, Chamfer.Space.snug)
+        .padding(.horizontal, Chamfer.Space.snug)
+        .padding(.top, Chamfer.Space.snug)
+        .padding(.bottom, Chamfer.Space.tight + 1)
+    }
+
+    private struct ListRow: View {
+        @State private var isHovered = false
+
+        let entry: Entry
+
+        var body: some View {
+            HStack(alignment: .firstTextBaseline, spacing: Chamfer.Space.regular) {
+                Text(entry.title)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Chamfer.Palette.textOnPaper)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: Chamfer.Space.snug)
+                Text(entry.detail)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Chamfer.Palette.textOnPaperSoft)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, Chamfer.Space.snug)
+            .padding(.vertical, Chamfer.Space.tight - 1)
+            .frame(height: 22)
+            .background(isHovered ? Chamfer.Palette.paper.opacity(0.75) : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small - 2, style: .continuous))
+            .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
+        }
     }
 
     private var row: some View {
@@ -159,9 +177,10 @@ public struct BottomBar: View {
                 .foregroundStyle(Chamfer.Palette.textOnPaper)
                 .padding(.horizontal, Chamfer.Space.roomy)
                 .padding(.vertical, Chamfer.Space.regular)
-                .background(
-                    isHovered || isSelected ? Chamfer.Palette.paper.opacity(0.5) : .clear
-                )
+                // Only the pointer fills a destination. Nothing is marked as
+                // selected: the reference bar has no selected state, and the
+                // page already says which one you are on.
+                .background(isHovered ? Chamfer.Palette.paper.opacity(0.6) : .clear)
                 .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.medium, style: .continuous))
             }
             .buttonStyle(.plain)

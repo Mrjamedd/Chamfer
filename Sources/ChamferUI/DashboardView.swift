@@ -44,7 +44,8 @@ public struct DashboardView: View {
                 symbol: "cpu",
                 label: "Models",
                 entries: Backend.all(runState: state.runState).map {
-                    .init(id: $0.name, title: $0.name, detail: $0.status)
+                    // Short names in the bar; the page carries the full ones.
+                    .init(id: $0.name, title: $0.shortName, detail: $0.status)
                 }
             )
         ]
@@ -168,6 +169,7 @@ private struct ReviewPage: View {
 /// Models page and the bar's hover list, so the two can never disagree.
 struct Backend: Identifiable {
     let name: String
+    let shortName: String
     let status: String
     let tone: Pill.Tone
     let detail: String
@@ -182,6 +184,7 @@ struct Backend: Identifiable {
         return [
             Backend(
                 name: "Apple Foundation Models",
+                shortName: "Foundation Models",
                 status: appleUnavailableReason == nil ? "Active" : "Unavailable",
                 tone: appleUnavailableReason == nil ? .positive : .danger,
                 detail: appleUnavailableReason
@@ -189,12 +192,14 @@ struct Backend: Identifiable {
             ),
             Backend(
                 name: "Ollama",
+                shortName: "Ollama",
                 status: "Not configured",
                 tone: .neutral,
                 detail: "Point Chamfer at a local Ollama server to use a larger model, if this Mac has the memory for it."
             ),
             Backend(
                 name: "Bundled MLX",
+                shortName: "Bundled MLX",
                 status: "Not installed",
                 tone: .neutral,
                 detail: "Ships a small model inside the app. Works without Apple Intelligence, at the cost of a large download."
