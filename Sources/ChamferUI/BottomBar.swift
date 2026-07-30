@@ -41,8 +41,9 @@ public struct BarIdleBehaviour: Sendable {
         delay: .seconds(3.5),
         restingOpacity: 0.82,
         activeExtraPadding: 5,
-        // ~220ms, soft.
-        curve: .spring(response: 0.22, dampingFraction: 0.86)
+        // ~280ms, soft and slightly over-damped so it settles rather than
+        // bounces — the fold is a long move for a small object.
+        curve: .spring(response: 0.28, dampingFraction: 0.92)
     )
 
     /// The previous behaviour: always labelled, never dimmed.
@@ -118,7 +119,11 @@ public struct BottomBar: View {
     // Proportioned off the reference: the slab is a little under four times
     // the cap height of its labels, not six.
     private static let collapsedHeight: CGFloat = 34
+    /// Thinner once the labels have gone, so the resting bar is a slimmer
+    /// object and not merely a shorter-worded one.
+    private static let idleHeight: CGFloat = 27
     private static let radius: CGFloat = 12
+    private static let idleRadius: CGFloat = 10
     /// Close to the width of the destination row, so the status column lands
     /// near the slab's right edge instead of stranding empty space.
     private static let listWidth: CGFloat = 262
@@ -170,8 +175,8 @@ public struct BottomBar: View {
                     .allowsHitTesting(isSearching)
             }
             .frame(width: isSearching ? fieldWidth : collapsedWidth)
-            .barSurface(radius: Self.radius)
-            .chamferRing(radius: Self.radius)
+            .barSurface(radius: surfaceRadius)
+            .chamferRing(radius: surfaceRadius)
 
             closeCircle
         }
@@ -213,6 +218,10 @@ public struct BottomBar: View {
         // mutated inside an explicit withAnimation, which is what makes the
         // structural changes — a list being inserted, the field replacing the
         // destinations — animate rather than snap into place.
+    }
+
+    private var surfaceRadius: CGFloat {
+        labelsShown || isSearching ? Self.radius : Self.idleRadius
     }
 
     static let openCurve = Animation.spring(response: 0.34, dampingFraction: 0.82)
@@ -501,7 +510,7 @@ public struct BottomBar: View {
             }
         }
         .padding(.horizontal, Chamfer.Space.tight + 1)
-        .frame(height: Self.collapsedHeight)
+        .frame(height: labelsShown || isSearching ? Self.collapsedHeight : Self.idleHeight)
         .coordinateSpace(.named(Self.rowSpace))
         .overlay(alignment: .topLeading) { glassSlider }
         .gesture(slide)
@@ -549,6 +558,11 @@ public struct BottomBar: View {
 
     private struct BarButton: View {
         @State private var isHovered = false
+        /// The label's natural width, measured from a hidden copy that is
+        /// never squeezed. Animating a real width is what makes the collapse
+        /// smooth — inserting and removing the label instead makes the text
+        /// pop while the pill catches up behind it.
+        @State private var labelWidth: CGFloat = 0
 
         let item: Item
         let isPressed: Bool
@@ -559,23 +573,29 @@ public struct BottomBar: View {
         let extraPadding: CGFloat
         let onHover: (Bool) -> Void
 
+        private static let labelFont = Font.system(size: 12.5, weight: .medium)
+        private static let gap = Chamfer.Space.tight + 2
+
         private var shape: RoundedRectangle {
             RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
         }
 
         var body: some View {
-            HStack(spacing: showsLabel ? Chamfer.Space.tight + 2 : 0) {
+            // The gap lives in the stack's spacing, not inside the label's
+            // frame — folded into the frame it is counted against the text's
+            // own width and clips the last glyph.
+            HStack(spacing: showsLabel ? Self.gap : 0) {
                 Image(systemName: item.symbol)
                     .font(.system(size: 11, weight: .regular))
-                if showsLabel {
-                    Text(item.label)
-                        .font(.system(size: 12.5, weight: .medium))
-                        .fixedSize()
-                        // Fading and squeezing rather than being removed, so
-                        // the pill's width carries the motion instead of the
-                        // text popping out of it.
-                        .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .leading)))
-                }
+                Text(item.label)
+                    .font(Self.labelFont)
+                    .fixedSize()
+                    .opacity(showsLabel ? 1 : 0)
+                    // The label keeps its place in the layout and gives up its
+                    // width instead of leaving it, so the pill closes around it
+                    // in one continuous move.
+                    .frame(width: showsLabel ? labelWidth : 0, alignment: .leading)
+                    .clipped()
             }
             .foregroundStyle(Chamfer.Palette.textOnPaper)
             .padding(.horizontal, Chamfer.Space.regular - 1 + (isActive ? extraPadding : 0))
@@ -586,11 +606,27 @@ public struct BottomBar: View {
             .clipShape(shape)
             .chamferHoverRing(isHovered && !isPressed, radius: Chamfer.Radius.small)
             .contentShape(shape)
+            .background(alignment: .topLeading) { measurer }
             .onHover { inside in
                 isHovered = inside
                 onHover(inside)
             }
             .animation(Chamfer.Motion.quick, value: isHovered)
+        }
+
+        /// A copy of the label at its natural size, drawn nowhere. Backgrounds
+        /// do not affect the parent's layout, so measuring here is free.
+        private var measurer: some View {
+            Text(item.label)
+                .font(Self.labelFont)
+                .fixedSize()
+                .hidden()
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                    guard width > 0 else { return }
+                    // A hair of slack: a frame measured to the exact rendered
+                    // width can still clip the final glyph's antialiasing.
+                    labelWidth = width + 1
+                }
         }
     }
 }
