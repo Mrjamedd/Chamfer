@@ -48,6 +48,9 @@ public struct BottomBar: View {
     @State private var hovered: String?
     @State private var isSearching = false
     @State private var isSplit = false
+    @State private var pointerInRow = false
+    @State private var pointerInList = false
+    @State private var closeTask: Task<Void, Never>?
     @State private var query = ""
     @FocusState private var searchFocused: Bool
 
@@ -96,9 +99,11 @@ public struct BottomBar: View {
         // Searching lifts the bar clear of the bottom edge so the field sits
         // where you are looking rather than at the foot of the window.
         .offset(y: isSearching ? -Self.searchLift : 0)
-        .onHover { inside in
-            if !inside, !isSearching { hovered = nil }
-        }
+        // Deliberately no .onHover here. The slab's size depends on `hovered`,
+        // so measuring the pointer against it feeds back: expanding moves the
+        // edge past the pointer, which clears `hovered`, which collapses it,
+        // which re-enters the button. Exit is detected on the row and the list
+        // instead — neither changes size in response to this state.
         .animation(.spring(response: 0.3, dampingFraction: 0.84), value: hovered)
         .animation(.spring(response: 0.48, dampingFraction: 0.76), value: isSearching)
         .animation(.spring(response: 0.32, dampingFraction: 0.7), value: isSplit)
@@ -108,13 +113,49 @@ public struct BottomBar: View {
         VStack(spacing: 0) {
             if let item = expandedItem {
                 list(item)
+                    .onHover { pointer(inList: $0) }
                 Rectangle()
                     .fill(Chamfer.Palette.barStroke.opacity(0.7))
                     .frame(height: 1)
                     .padding(.horizontal, Chamfer.Space.regular)
             }
             row
+                .onHover { pointer(inRow: $0) }
         }
+    }
+
+    /// Closing is deferred rather than immediate.
+    ///
+    /// Inserting the list above the row rebuilds the row's tracking area, so
+    /// SwiftUI reports a spurious exit and immediate re-entry within a frame
+    /// or two. Closing on that exit oscillated — open, close, open — at screen
+    /// refresh rate, which is what made the bar flicker and the haptics
+    /// machine-gun. A short delay outlives the rebuild: the re-entry cancels
+    /// the pending close and nothing happens. It doubles as hover intent, so
+    /// cutting a corner across a destination no longer flashes its list open.
+    private func scheduleClose() {
+        closeTask?.cancel()
+        closeTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(160))
+            guard !Task.isCancelled else { return }
+            guard !pointerInRow, !pointerInList, !isSearching else { return }
+            hovered = nil
+        }
+    }
+
+    private func cancelClose() {
+        closeTask?.cancel()
+        closeTask = nil
+    }
+
+    private func pointer(inRow: Bool) {
+        pointerInRow = inRow
+        inRow ? cancelClose() : scheduleClose()
+    }
+
+    private func pointer(inList: Bool) {
+        pointerInList = inList
+        inList ? cancelClose() : scheduleClose()
     }
 
     private var expandedItem: Item? {
@@ -150,15 +191,15 @@ public struct BottomBar: View {
         }
         .frame(width: Self.searchWidth, alignment: .leading)
         .contentShape(Rectangle())
+        // Measured against the pair's total width, which is constant whether
+        // split or not — the field gives up exactly the space the circle
+        // takes — so the boundary never moves under the pointer.
         .onContinuousHover { hover in
-            switch hover {
-            case let .active(location):
-                let near = location.x > Self.searchWidth - Self.splitZone
-                if near, !isSplit { Haptics.pop() }
-                isSplit = near
-            case .ended:
-                isSplit = false
-            }
+            guard case let .active(location) = hover else { return }
+            let near = location.x > Self.searchWidth - Self.splitZone
+            guard near != isSplit else { return }
+            if near { Haptics.pop() }
+            isSplit = near
         }
         .onExitCommand(perform: endSearch)
         .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
