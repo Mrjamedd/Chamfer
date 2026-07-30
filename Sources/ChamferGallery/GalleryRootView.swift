@@ -47,10 +47,40 @@ struct GalleryRootView: View {
         ZStack(alignment: .leading) {
             Chamfer.Palette.canvas.ignoresSafeArea()
             detail
-            edgeSensor
             panel
         }
+        // Tracking the pointer across the whole window rather than putting an
+        // invisible strip on the left edge: a strip has to win hit-testing
+        // against everything under it, and loses the moment anything else is
+        // layered on top.
+        .onContinuousHover(coordinateSpace: .local) { hover in
+            switch hover {
+            case let .active(location):
+                react(to: location.x)
+            case .ended:
+                collapse()
+            }
+        }
         .environment(\.chamferNow, Fixtures.now)
+    }
+
+    private func react(to x: CGFloat) {
+        switch phase {
+        case .hidden:
+            guard x <= 24 else { return }
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.55)) {
+                phase = .peeking
+            }
+        case .peeking:
+            if x > Self.peek + 60 { collapse() }
+        case .open:
+            if x > Self.width + 60 { collapse() }
+        }
+    }
+
+    private func collapse() {
+        guard phase != .hidden else { return }
+        withAnimation(.easeOut(duration: 0.22)) { phase = .hidden }
     }
 
     @ViewBuilder
@@ -61,21 +91,6 @@ struct GalleryRootView: View {
         case .components:
             ComponentCatalog()
         }
-    }
-
-    /// A strip along the window's left edge. Brushing it pops the panel out.
-    private var edgeSensor: some View {
-        Color.clear
-            .frame(width: 20)
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .onHover { inside in
-                guard inside, phase == .hidden else { return }
-                withAnimation(.spring(response: 0.26, dampingFraction: 0.55)) {
-                    phase = .peeking
-                }
-            }
-            .allowsHitTesting(phase == .hidden)
     }
 
     private var panel: some View {
@@ -95,10 +110,6 @@ struct GalleryRootView: View {
                             }
                         }
                 }
-            }
-            .onHover { inside in
-                guard !inside, phase != .hidden else { return }
-                withAnimation(.easeOut(duration: 0.22)) { phase = .hidden }
             }
     }
 
