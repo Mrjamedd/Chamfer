@@ -23,19 +23,32 @@ public struct BottomBar: View {
         public let id: String
         public let symbol: String
         public let label: String
-        /// Shown when this item is hovered. Empty means the bar stays closed.
+        /// Shown when this item is hovered. Empty means the bar stays closed,
+        /// unless it offers search.
         public let entries: [Entry]
+        /// Adds a search action to the foot of this item's list.
+        public let showsSearch: Bool
 
-        public init(id: String, symbol: String, label: String, entries: [Entry] = []) {
+        public init(
+            id: String,
+            symbol: String,
+            label: String,
+            entries: [Entry] = [],
+            showsSearch: Bool = false
+        ) {
             self.id = id
             self.symbol = symbol
             self.label = label
             self.entries = entries
+            self.showsSearch = showsSearch
         }
     }
 
     @Binding private var selection: String
     @State private var hovered: String?
+    @State private var isSearching = false
+    @State private var query = ""
+    @FocusState private var searchFocused: Bool
 
     private let items: [Item]
 
@@ -46,6 +59,8 @@ public struct BottomBar: View {
     /// Close to the width of the destination row, so the status column lands
     /// near the slab's right edge instead of stranding empty space.
     private static let listWidth: CGFloat = 262
+    /// How far the bar rises when it becomes a search field.
+    private static let searchLift: CGFloat = 150
 
     public init(items: [Item], selection: Binding<String>) {
         self.items = items
@@ -63,15 +78,12 @@ public struct BottomBar: View {
     }
 
     private var slab: some View {
-        VStack(spacing: 0) {
-            if let entries = expandedEntries {
-                list(entries)
-                Rectangle()
-                    .fill(Chamfer.Palette.barStroke.opacity(0.7))
-                    .frame(height: 1)
-                    .padding(.horizontal, Chamfer.Space.regular)
+        Group {
+            if isSearching {
+                searchBubble
+            } else {
+                destinations
             }
-            row
         }
         .background(Chamfer.Palette.bar)
         .clipShape(RoundedRectangle(cornerRadius: Self.radius, style: .continuous))
@@ -81,26 +93,92 @@ public struct BottomBar: View {
         )
         .chamferFloat(radius: 20, y: 8, opacity: 0.14)
         .fixedSize()
+        // Searching lifts the bar clear of the bottom edge so the field sits
+        // where you are looking rather than at the foot of the window.
+        .offset(y: isSearching ? -Self.searchLift : 0)
         .onHover { inside in
-            if !inside { hovered = nil }
+            if !inside, !isSearching { hovered = nil }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.84), value: hovered)
+        .animation(.spring(response: 0.42, dampingFraction: 0.8), value: isSearching)
     }
 
-    private var expandedEntries: [Entry]? {
+    private var destinations: some View {
+        VStack(spacing: 0) {
+            if let item = expandedItem {
+                list(item)
+                Rectangle()
+                    .fill(Chamfer.Palette.barStroke.opacity(0.7))
+                    .frame(height: 1)
+                    .padding(.horizontal, Chamfer.Space.regular)
+            }
+            row
+        }
+    }
+
+    private var expandedItem: Item? {
         guard let hovered,
               let item = items.first(where: { $0.id == hovered }),
-              !item.entries.isEmpty
+              !item.entries.isEmpty || item.showsSearch
         else { return nil }
-        return item.entries
+        return item
+    }
+
+    // MARK: - Search
+
+    private var searchBubble: some View {
+        HStack(spacing: Chamfer.Space.regular) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Chamfer.Palette.textOnPaperSoft)
+            TextField("Search notes", text: $query)
+                .textFieldStyle(.plain)
+                .font(.system(size: 14))
+                .foregroundStyle(Chamfer.Palette.textOnPaper)
+                .focused($searchFocused)
+                .onSubmit { searchFocused = true }
+            Button(action: endSearch) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Chamfer.Palette.textOnPaperSoft)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, Chamfer.Space.roomy)
+        .frame(width: 420, height: Self.collapsedHeight)
+        .onExitCommand(perform: endSearch)
+    }
+
+    private func beginSearch() {
+        Haptics.pop()
+        hovered = nil
+        isSearching = true
+        // The field only exists once the bubble is on screen.
+        DispatchQueue.main.async { searchFocused = true }
+    }
+
+    private func endSearch() {
+        Haptics.commit()
+        searchFocused = false
+        query = ""
+        isSearching = false
     }
 
     /// Menu density: 12pt, 20pt rows, a rounded highlight under the pointer.
     /// The list is part of the bar, not a panel with its own voice.
-    private func list(_ entries: [Entry]) -> some View {
+    private func list(_ item: Item) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            ForEach(entries) { entry in
+            ForEach(item.entries) { entry in
                 ListRow(entry: entry)
+            }
+            if item.showsSearch {
+                if !item.entries.isEmpty {
+                    Rectangle()
+                        .fill(Chamfer.Palette.barStroke.opacity(0.6))
+                        .frame(height: 1)
+                        .padding(.vertical, Chamfer.Space.tight)
+                }
+                SearchRow(action: beginSearch)
             }
         }
         .frame(width: Self.listWidth, alignment: .leading)
@@ -137,6 +215,36 @@ public struct BottomBar: View {
         }
     }
 
+    /// The action at the foot of a list. Same metrics as an entry so the list
+    /// stays one rhythm, but led by an icon to mark it as a verb.
+    private struct SearchRow: View {
+        @State private var isHovered = false
+
+        let action: () -> Void
+
+        var body: some View {
+            Button(action: action) {
+                HStack(spacing: Chamfer.Space.snug) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Chamfer.Palette.textOnPaperSoft)
+                        .frame(width: 13)
+                    Text("Search notes")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Chamfer.Palette.textOnPaper)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, Chamfer.Space.snug)
+                .frame(height: 20)
+                .background(isHovered ? Chamfer.Palette.paper.opacity(0.75) : .clear)
+                .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small - 2, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+        }
+    }
+
     private var row: some View {
         HStack(spacing: Chamfer.Space.snug) {
             ForEach(items) { item in
@@ -144,8 +252,9 @@ public struct BottomBar: View {
                     item: item,
                     isSelected: item.id == selection,
                     onHover: { inside in
-                        guard inside else { return }
-                        let next = item.entries.isEmpty ? nil : item.id
+                        guard inside, !isSearching else { return }
+                        let opens = !item.entries.isEmpty || item.showsSearch
+                        let next = opens ? item.id : nil
                         if next != nil, hovered == nil { Haptics.pop() }
                         hovered = next
                     },

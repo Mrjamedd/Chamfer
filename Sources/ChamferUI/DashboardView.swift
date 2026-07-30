@@ -26,7 +26,19 @@ public struct DashboardView: View {
 
     private var items: [BottomBar.Item] {
         [
-            .init(id: Tab.notes, symbol: "doc.text", label: "Notes"),
+            .init(
+                id: Tab.notes,
+                symbol: "doc.text",
+                label: "Notes",
+                entries: state.recentlyCleaned.prefix(5).map { record in
+                    .init(
+                        id: record.id.uuidString,
+                        title: record.note.title,
+                        detail: "\(record.note.wordCount.formatted()) words"
+                    )
+                },
+                showsSearch: true
+            ),
             .init(
                 id: Tab.review,
                 symbol: "checkmark.circle",
