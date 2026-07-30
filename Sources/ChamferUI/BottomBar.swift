@@ -65,8 +65,8 @@ public struct BottomBar: View {
 
     // Proportioned off the reference: the slab is a little under four times
     // the cap height of its labels, not six.
-    private static let collapsedHeight: CGFloat = 40
-    private static let radius: CGFloat = 14
+    private static let collapsedHeight: CGFloat = 34
+    private static let radius: CGFloat = 12
     /// Close to the width of the destination row, so the status column lands
     /// near the slab's right edge instead of stranding empty space.
     private static let listWidth: CGFloat = 262
@@ -400,7 +400,7 @@ public struct BottomBar: View {
     /// press and release without travelling — so there is one gesture rather
     /// than a button and a drag competing for the same pixels.
     private var row: some View {
-        HStack(spacing: Chamfer.Space.snug) {
+        HStack(spacing: Chamfer.Space.tight) {
             ForEach(items) { item in
                 BarButton(
                     item: item,
@@ -419,7 +419,7 @@ public struct BottomBar: View {
                 }
             }
         }
-        .padding(.horizontal, Chamfer.Space.snug)
+        .padding(.horizontal, Chamfer.Space.tight + 1)
         .frame(height: Self.collapsedHeight)
         .coordinateSpace(.named(Self.rowSpace))
         .overlay(alignment: .topLeading) { glassSlider }
@@ -473,24 +473,24 @@ public struct BottomBar: View {
         let onHover: (Bool) -> Void
 
         private var shape: RoundedRectangle {
-            RoundedRectangle(cornerRadius: Chamfer.Radius.medium, style: .continuous)
+            RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
         }
 
         var body: some View {
-            HStack(spacing: Chamfer.Space.snug - 1) {
+            HStack(spacing: Chamfer.Space.tight + 2) {
                 Image(systemName: item.symbol)
-                    .font(.system(size: 12, weight: .regular))
+                    .font(.system(size: 11, weight: .regular))
                 Text(item.label)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 12.5, weight: .medium))
             }
             .foregroundStyle(Chamfer.Palette.textOnPaper)
-            .padding(.horizontal, Chamfer.Space.regular + 2)
-            .padding(.vertical, Chamfer.Space.tight + 2)
+            .padding(.horizontal, Chamfer.Space.regular - 1)
+            .padding(.vertical, Chamfer.Space.tight)
             // The glass pill covers the fill while pressed, so the hover tint
             // would only muddy it.
             .background(isHovered && !isPressed ? Chamfer.Palette.paper.opacity(0.6) : .clear)
             .clipShape(shape)
-            .chamferHoverRing(isHovered && !isPressed, radius: Chamfer.Radius.medium)
+            .chamferHoverRing(isHovered && !isPressed, radius: Chamfer.Radius.small)
             .contentShape(shape)
             .onHover { inside in
                 isHovered = inside
