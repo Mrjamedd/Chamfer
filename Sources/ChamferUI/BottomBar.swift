@@ -67,8 +67,10 @@ public struct BottomBar: View {
     /// field is once it gets there.
     private static let searchLift: CGFloat = 360
     private static let searchWidth: CGFloat = 420
-    /// The right-hand strip of the field that splits the close button off.
+    /// The right-hand strip of the field that splits the close button off, and
+    /// how much further back the pointer must travel to close it again.
     private static let splitZone: CGFloat = 96
+    private static let splitHysteresis: CGFloat = 40
 
     public init(items: [Item], selection: Binding<String>) {
         self.items = items
@@ -104,20 +106,34 @@ public struct BottomBar: View {
         // edge past the pointer, which clears `hovered`, which collapses it,
         // which re-enters the button. Exit is detected on the row and the list
         // instead — neither changes size in response to this state.
-        .animation(.spring(response: 0.3, dampingFraction: 0.84), value: hovered)
-        .animation(.spring(response: 0.48, dampingFraction: 0.76), value: isSearching)
-        .animation(.spring(response: 0.32, dampingFraction: 0.7), value: isSplit)
+        //
+        // Nor any .animation(value:) modifiers. Every one of these states is
+        // mutated inside an explicit withAnimation, which is what makes the
+        // structural changes — a list being inserted, the field replacing the
+        // destinations — animate rather than snap into place.
     }
+
+    static let openCurve = Animation.spring(response: 0.34, dampingFraction: 0.82)
+    static let searchCurve = Animation.spring(response: 0.5, dampingFraction: 0.78)
+    static let splitCurve = Animation.spring(response: 0.34, dampingFraction: 0.7)
 
     private var destinations: some View {
         VStack(spacing: 0) {
             if let item = expandedItem {
-                list(item)
-                    .onHover { pointer(inList: $0) }
-                Rectangle()
-                    .fill(Chamfer.Palette.barStroke.opacity(0.7))
-                    .frame(height: 1)
-                    .padding(.horizontal, Chamfer.Space.regular)
+                VStack(spacing: 0) {
+                    list(item)
+                    Rectangle()
+                        .fill(Chamfer.Palette.barStroke.opacity(0.7))
+                        .frame(height: 1)
+                        .padding(.horizontal, Chamfer.Space.regular)
+                }
+                .onHover { pointer(inList: $0) }
+                // Without this the rows appear at full size the instant the
+                // slab starts growing, which reads as a snap even though the
+                // frame is animating underneath them.
+                .transition(
+                    .opacity.combined(with: .offset(y: 8)).combined(with: .scale(scale: 0.98, anchor: .bottom))
+                )
             }
             row
                 .onHover { pointer(inRow: $0) }
@@ -139,7 +155,7 @@ public struct BottomBar: View {
             try? await Task.sleep(for: .milliseconds(160))
             guard !Task.isCancelled else { return }
             guard !pointerInRow, !pointerInList, !isSearching else { return }
-            hovered = nil
+            withAnimation(Self.openCurve) { hovered = nil }
         }
     }
 
@@ -177,29 +193,44 @@ public struct BottomBar: View {
             field
                 .frame(width: fieldWidth, height: Self.collapsedHeight)
                 .barSurface(radius: Self.radius)
-            if isSplit {
-                Button(action: endSearch) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Chamfer.Palette.textOnPaper)
-                        .frame(width: Self.collapsedHeight, height: Self.collapsedHeight)
-                }
-                .buttonStyle(.plain)
+            // Always present, never inserted. A view that is added and removed
+            // is being scaled by its transition at exactly the moment you aim
+            // at it, which is how clicks got missed; animating its width keeps
+            // one stable target.
+            Image(systemName: "xmark")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Chamfer.Palette.textOnPaper)
+                .frame(width: Self.collapsedHeight, height: Self.collapsedHeight)
                 .barSurface(radius: Self.collapsedHeight / 2)
-                .transition(.scale(scale: 0.4).combined(with: .opacity))
-            }
+                .frame(width: isSplit ? Self.collapsedHeight : 0)
+                .opacity(isSplit ? 1 : 0)
+                .contentShape(Circle())
+                // A tap gesture rather than a Button: while the field holds
+                // focus, the first click on a button is spent moving first
+                // responder instead of activating it, which is why it took two.
+                .onTapGesture { endSearch() }
+                .allowsHitTesting(isSplit)
         }
         .frame(width: Self.searchWidth, alignment: .leading)
         .contentShape(Rectangle())
         // Measured against the pair's total width, which is constant whether
         // split or not — the field gives up exactly the space the circle
-        // takes — so the boundary never moves under the pointer.
+        // takes — so the boundary never moves under the pointer. Separate
+        // thresholds for opening and closing, so a pointer resting on the
+        // boundary cannot chatter the circle in and out.
         .onContinuousHover { hover in
-            guard case let .active(location) = hover else { return }
-            let near = location.x > Self.searchWidth - Self.splitZone
-            guard near != isSplit else { return }
-            if near { Haptics.pop() }
-            isSplit = near
+            // Hover keeps arriving while the layer animates out; without this
+            // the split survives the close and the next search opens already
+            // split apart.
+            guard isSearching, case let .active(location) = hover else { return }
+            let opensAt = Self.searchWidth - Self.splitZone
+            let closesAt = opensAt - Self.splitHysteresis
+            if !isSplit, location.x > opensAt {
+                Haptics.pop()
+                withAnimation(Self.splitCurve) { isSplit = true }
+            } else if isSplit, location.x < closesAt {
+                withAnimation(Self.splitCurve) { isSplit = false }
+            }
         }
         .onExitCommand(perform: endSearch)
         .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
@@ -228,8 +259,11 @@ public struct BottomBar: View {
 
     private func beginSearch() {
         Haptics.pop()
-        hovered = nil
-        isSearching = true
+        cancelClose()
+        withAnimation(Self.searchCurve) {
+            hovered = nil
+            isSearching = true
+        }
         // The field only exists once the bubble is on screen.
         DispatchQueue.main.async { searchFocused = true }
     }
@@ -238,8 +272,10 @@ public struct BottomBar: View {
         Haptics.commit()
         searchFocused = false
         query = ""
-        isSplit = false
-        isSearching = false
+        withAnimation(Self.searchCurve) {
+            isSplit = false
+            isSearching = false
+        }
     }
 
     /// Menu density: 12pt, 20pt rows, a rounded highlight under the pointer.
@@ -333,8 +369,9 @@ public struct BottomBar: View {
                         guard inside, !isSearching else { return }
                         let opens = !item.entries.isEmpty || item.showsSearch
                         let next = opens ? item.id : nil
+                        guard next != hovered else { return }
                         if next != nil, hovered == nil { Haptics.pop() }
-                        hovered = next
+                        withAnimation(Self.openCurve) { hovered = next }
                     },
                     action: { selection = item.id }
                 )
