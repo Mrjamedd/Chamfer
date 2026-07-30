@@ -149,12 +149,24 @@ typical case is not finished.
 `ChamferUI` holds the design system and depends only on `ChamferCore`, so it
 cannot reach for app state and stays reusable by construction.
 `ChamferGallery` is an executable that renders every scenario and every
-component in both appearances. It exists because this machine has Command Line
-Tools rather than Xcode, so there is no preview canvas:
+component. It exists because this machine has Command Line Tools rather than
+Xcode, so there is no preview canvas:
 
 ```sh
-swift run ChamferGallery --scenario flooded --dark
+swift run ChamferGallery --scenario flooded
 ```
+
+## Visual language
+
+Deep beige canvas, pale beige cards floating on it, dark ink for type. The
+theme is fixed rather than appearance-following: the beige is the identity.
+
+Hovering never recolours a card. It rises, takes a heavier shadow, and a pink
+glitter diffusion blooms around its edges — soft bloom plus individual
+twinkling specks, so it reads as glitter rather than as a flat pink mist. The
+same treatment applies to sidebar rows, so pointing at something feels
+identical everywhere. It lives in one place, `HoverGlow`, and is applied with
+`.chamferHoverGlow(isActive:cornerRadius:)`.
 
 Real wiring comes last. The watcher and the model backend fill the same
 `DashboardState` the fixtures produce today, so no view changes when they land.

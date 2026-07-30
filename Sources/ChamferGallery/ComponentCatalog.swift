@@ -13,6 +13,7 @@ struct ComponentCatalog: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Chamfer.Space.section) {
                 specimen("Palette") { palette }
+                specimen("Hover treatment — at rest and held open") { hoverPair }
                 specimen("Surfaces — paper and ink") { surfaces }
                 specimen("Run state badges") {
                     HStack(spacing: Chamfer.Space.snug) {
@@ -66,6 +67,37 @@ struct ComponentCatalog: View {
         }
         .frame(maxWidth: .infinity)
         .background(Chamfer.Palette.canvas)
+    }
+
+    /// The hover state pinned open next to a resting one. Hover is impossible
+    /// to inspect properly while you are holding the mouse still on it, and
+    /// impossible to screenshot at all.
+    private var hoverPair: some View {
+        HStack(spacing: Chamfer.Space.section) {
+            ForEach([false, true], id: \.self) { glowing in
+                VStack(alignment: .leading, spacing: Chamfer.Space.snug) {
+                    Text("Standup 30 Jul")
+                        .font(Chamfer.TypeScale.title)
+                        .foregroundStyle(Chamfer.Palette.textOnPaper)
+                    Text("340 words · line 12 · 3 min ago")
+                        .font(Chamfer.TypeScale.caption)
+                        .foregroundStyle(Chamfer.Palette.textOnPaperFaint)
+                }
+                .padding(Chamfer.Space.roomy)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Chamfer.Palette.paper)
+                .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous)
+                        .strokeBorder(
+                            glowing ? Chamfer.Palette.pinkSoft : Chamfer.Palette.paperStroke,
+                            lineWidth: 1
+                        )
+                )
+                .chamferHoverGlow(isActive: glowing, cornerRadius: Chamfer.Radius.large)
+            }
+        }
+        .padding(.vertical, Chamfer.Space.roomy)
     }
 
     /// The same components on both surfaces, since every one of them has to

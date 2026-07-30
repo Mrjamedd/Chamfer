@@ -12,12 +12,13 @@ public extension Chamfer {
     /// dark ink, one pink highlight. The look is the brand, so it does not
     /// change with the system setting.
     enum Palette {
-        // Paper
-        public static let canvas = rgb(0xE9E0D2)
-        public static let canvasDeep = rgb(0xE0D6C6)
-        public static let paper = rgb(0xF6F1E7)
-        public static let paperSunken = rgb(0xEBE3D5)
-        public static let paperStroke = rgb(0xDCD1BF)
+        // Paper. The canvas is deliberately deep and saturated so the cards,
+        // which stay pale, lift off it without needing heavy shadows.
+        public static let canvas = rgb(0xDCCEB4)
+        public static let canvasDeep = rgb(0xD1C1A2)
+        public static let paper = rgb(0xF7F2E8)
+        public static let paperSunken = rgb(0xEDE4D3)
+        public static let paperStroke = rgb(0xCFC0A6)
 
         // Ink — the hovered card
         public static let ink = rgb(0x1A1613)
@@ -196,10 +197,8 @@ public extension Chamfer {
 
     enum Motion {
         public static let quick = Animation.easeOut(duration: 0.14)
-        /// The lift when a card is hovered.
-        public static let lift = Animation.spring(response: 0.32, dampingFraction: 0.78)
-        /// One pass of the shine across a card.
-        public static let shine = Animation.easeOut(duration: 0.9)
+        /// The rise and pink bloom when a card is hovered.
+        public static let lift = Animation.spring(response: 0.34, dampingFraction: 0.76)
     }
 }
 

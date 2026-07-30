@@ -3,15 +3,14 @@ import SwiftUI
 
 // MARK: - Card
 
-/// The one surface in the system: a beige card floating on beige canvas.
+/// The one surface in the system: a pale beige card floating on deep beige
+/// canvas.
 ///
-/// On hover it lifts, inverts to ink, and a pink sheen sweeps across it — a
-/// chamfered edge catching the light. Everything inside recolours itself,
-/// because the card publishes its surface through the environment rather than
-/// telling each child what to do.
+/// Hovering does not recolour it. It rises, takes a heavier shadow, and a pink
+/// glitter diffusion blooms around its edges — the card stays beige throughout,
+/// so pointing at something never changes what it says.
 public struct Card<Content: View>: View {
     @State private var isHovered = false
-    @State private var shinePhase: CGFloat = 0
 
     private let content: Content
     private let padding: CGFloat
@@ -27,76 +26,27 @@ public struct Card<Content: View>: View {
         self.content = content()
     }
 
-    private var surface: SurfaceMode { isHovered ? .ink : .paper }
-
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous)
     }
 
     public var body: some View {
         content
-            .environment(\.chamferSurface, surface)
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(surface.background)
-            .overlay {
-                if isHovered {
-                    Shine(phase: shinePhase)
-                }
-            }
+            .background(Chamfer.Palette.paper)
             .clipShape(shape)
-            .overlay(shape.strokeBorder(surface.stroke, lineWidth: 1))
-            .shadow(
-                color: .black.opacity(isHovered ? 0.20 : 0.08),
-                radius: isHovered ? 20 : 9,
-                y: isHovered ? 11 : 4
+            .overlay(
+                shape.strokeBorder(
+                    isHovered ? Chamfer.Palette.pinkSoft : Chamfer.Palette.paperStroke,
+                    lineWidth: 1
+                )
             )
-            .shadow(
-                color: Chamfer.Palette.pink.opacity(isHovered ? 0.26 : 0),
-                radius: 26,
-                y: 8
-            )
-            .offset(y: isHovered ? -3 : 0)
-            .animation(Chamfer.Motion.lift, value: isHovered)
+            .chamferHoverGlow(isActive: isHovered, cornerRadius: Chamfer.Radius.large)
             .onHover { hovering in
                 guard interactive else { return }
                 isHovered = hovering
-                if hovering {
-                    shinePhase = 0
-                    withAnimation(Chamfer.Motion.shine) { shinePhase = 1 }
-                } else {
-                    shinePhase = 0
-                }
             }
-    }
-}
-
-/// A narrow diagonal band of pink light travelling left to right.
-private struct Shine: View {
-    let phase: CGFloat
-
-    var body: some View {
-        GeometryReader { geometry in
-            let width = geometry.size.width
-            let band = max(width * 0.42, 110)
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0),
-                    .init(color: Chamfer.Palette.pink.opacity(0.10), location: 0.35),
-                    .init(color: Chamfer.Palette.pink.opacity(0.55), location: 0.5),
-                    .init(color: Chamfer.Palette.pink.opacity(0.10), location: 0.65),
-                    .init(color: .clear, location: 1)
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(width: band)
-            .scaleEffect(y: 2.4)
-            .rotationEffect(.degrees(16))
-            .offset(x: -band + phase * (width + band * 2))
-            .blendMode(.plusLighter)
-        }
-        .allowsHitTesting(false)
     }
 }
 
