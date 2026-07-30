@@ -13,11 +13,12 @@ struct ChamferGalleryApp: App {
         WindowGroup("Chamfer Gallery") {
             GalleryRootView()
         }
-        .defaultSize(width: Chamfer.Window.defaultWidth, height: Chamfer.Window.defaultHeight)
         // No title bar, so the window is one continuous field of beige rather
         // than beige under a strip of system chrome.
         .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentMinSize)
+        // The root view is a fixed frame, so tying the window to its content
+        // size is what makes the window unresizable.
+        .windowResizability(.contentSize)
     }
 }
 
@@ -27,6 +28,20 @@ final class GalleryAppDelegate: NSObject, NSApplicationDelegate {
         // process behind everything else without this.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        lockWindows()
+    }
+
+    /// `windowResizability` stops the frame being dragged, but the zoom button
+    /// and full screen would still resize it. Both are removed here so the
+    /// composition can only ever be seen at the size it was designed for.
+    private func lockWindows() {
+        DispatchQueue.main.async {
+            for window in NSApp.windows {
+                window.styleMask.remove(.resizable)
+                window.collectionBehavior.insert(.fullScreenNone)
+                window.standardWindowButton(.zoomButton)?.isEnabled = false
+            }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

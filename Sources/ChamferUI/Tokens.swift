@@ -226,13 +226,13 @@ public extension Chamfer {
         public static var width: CGFloat { measure + margin * 2 }
     }
 
-    /// Sized so the sheet gets its natural width with a little cream to spare,
-    /// and stands slightly taller than it is wide — a page, not a panel.
+    /// Fixed, not merely a default. The sheet gets its natural width with a
+    /// little cream to spare and stands taller than it is wide — a page, not a
+    /// panel — and the window is locked to it so the composition cannot be
+    /// pulled out of proportion.
     enum Window {
-        public static let defaultWidth: CGFloat = 780
-        public static let defaultHeight: CGFloat = 900
-        public static let minWidth: CGFloat = 620
-        public static let minHeight: CGFloat = 540
+        public static let width: CGFloat = 780
+        public static let height: CGFloat = 900
     }
 }
 
