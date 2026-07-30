@@ -122,7 +122,7 @@ struct SidebarRow: View {
             )
         }
         .buttonStyle(.plain)
-        .chamferHoverGlow(isActive: isHovered, cornerRadius: Chamfer.Radius.medium, lift: 3)
+        .chamferHoverLift(isActive: isHovered, lift: 3)
         .onHover { isHovered = $0 }
     }
 }

@@ -20,7 +20,12 @@ public extension Chamfer {
         public static let paperSunken = rgb(0xEDE4D3)
         public static let paperStroke = rgb(0xCFC0A6)
 
-        // Ink — the hovered card
+        // The note page: white, with black type on it.
+        public static let page = rgb(0xFFFDFA)
+        public static let pageText = rgb(0x14110E)
+        public static let pageTextSoft = rgb(0x5A5248)
+
+        // Ink
         public static let ink = rgb(0x1A1613)
         public static let inkSunken = rgb(0x241E19)
         public static let inkStroke = rgb(0x342C24)
@@ -214,6 +219,12 @@ public extension Chamfer {
         public static let caption = Font.system(size: 11, weight: .regular)
         public static let captionStrong = Font.system(size: 11, weight: .semibold)
         public static let mono = Font.system(size: 12, weight: .regular, design: .monospaced)
+
+        // The note page reads as a printed page, so it is set in a serif at
+        // reading sizes rather than in the UI font.
+        public static let pageTitle = Font.system(size: 40, weight: .bold, design: .serif)
+        public static let pageHeading = Font.system(size: 23, weight: .semibold, design: .serif)
+        public static let pageBody = Font.system(size: 17, weight: .regular, design: .serif)
     }
 }
 

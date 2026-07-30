@@ -45,17 +45,21 @@ public struct DashboardState: Sendable, Equatable {
     public var folders: [WatchedFolder]
     public var proposals: [Proposal]
     public var recentlyCleaned: [CleanupRecord]
+    /// The note currently on the page, if one is open.
+    public var openNote: NoteDocument?
 
     public init(
         runState: RunState,
         folders: [WatchedFolder],
         proposals: [Proposal],
-        recentlyCleaned: [CleanupRecord]
+        recentlyCleaned: [CleanupRecord],
+        openNote: NoteDocument? = nil
     ) {
         self.runState = runState
         self.folders = folders
         self.proposals = proposals
         self.recentlyCleaned = recentlyCleaned
+        self.openNote = openNote
     }
 
     public var pendingProposals: [Proposal] {

@@ -38,6 +38,49 @@ enum SampleNotes {
         line: 3
     )
 
+    /// A cleaned note, long enough that the page has to handle real reading
+    /// length rather than two decorative paragraphs.
+    static let migrationBody = """
+    # Thoughts on the scheduling migration
+
+    We finally moved off the old scheduling system last week, and it went \
+    better than any of us expected. Writing this down while it is still fresh, \
+    mostly so the next person who has to do something like this has something \
+    to read that isn't a postmortem.
+
+    The short version: the migration itself took an afternoon. Everything \
+    around the migration took five weeks.
+
+    ## What actually broke
+
+    The retry logic kept breaking: it retried without any backoff, producing a \
+    thundering herd every time a downstream service so much as flinched. We \
+    knew about this. We had known about it for a year. It never made it above \
+    the line on any planning document because it only hurt during incidents, \
+    and during incidents nobody is writing tickets.
+
+    Fixing it turned out to be nine lines. That ratio — a year of ambient pain \
+    against nine lines — is the thing I keep turning over.
+
+    ## What went well
+
+    Running both systems side by side for a fortnight was the single best \
+    decision. It cost us some duplicated work and a slightly confusing \
+    dashboard, and in exchange we got to be wrong in private.
+
+    We also wrote the rollback before the migration, which felt like \
+    superstition at the time and like basic hygiene afterwards.
+
+    ## Open questions
+
+    Who owns the queue now? Is the old dashboard still wired up to anything? \
+    Do we still need the nightly job, or was that only there to paper over the \
+    retry problem we have now fixed?
+
+    None of these are urgent. All of them will be embarrassing in six months \
+    if nobody writes the answers down.
+    """
+
     static let rules = [
         "heading.levels",
         "list.bullets",

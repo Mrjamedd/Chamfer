@@ -1,206 +1,155 @@
 import ChamferCore
 import SwiftUI
 
-/// The whole dashboard, rendered from one value.
-///
-/// It takes a `DashboardState` and nothing else — no store, no service, no
-/// clock. That is what lets the gallery drive it through every state, and what
-/// will let the real watcher drive it later without any view changing.
+/// The whole window: one page floating on beige, a bar floating over the page,
+/// and a close control that only appears when you reach for it.
 public struct DashboardView: View {
-    private let state: DashboardState
+    @State private var tab: String
+    @State private var pointerAtTop = false
 
-    public init(state: DashboardState) {
+    private let state: DashboardState
+    private let onClose: () -> Void
+
+    private static let topGutter: CGFloat = 54
+    private static let bottomGutter: CGFloat = 20
+
+    public init(state: DashboardState, tab: String = Tab.notes, onClose: @escaping () -> Void = {}) {
         self.state = state
+        self.onClose = onClose
+        _tab = State(initialValue: tab)
+    }
+
+    public enum Tab {
+        public static let apps = "apps"
+        public static let review = "review"
+        public static let notes = "notes"
+    }
+
+    private var items: [BottomBar.Item] {
+        [
+            .init(id: Tab.apps, symbol: "macwindow", label: "Apps"),
+            .init(id: Tab.review, symbol: "chevron.left.forwardslash.chevron.right", label: "Review"),
+            .init(id: Tab.notes, symbol: "paperclip", label: "Notes")
+        ]
     }
 
     public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Chamfer.Space.loose) {
-                header
-                RunStateBanner(state.runState)
-                HStack(alignment: .top, spacing: Chamfer.Space.loose) {
-                    queue
-                    rail.frame(width: 300)
-                }
-            }
-            .padding(Chamfer.Space.section)
-        }
-        .background(Chamfer.Palette.canvas)
-    }
+        ZStack {
+            Chamfer.Palette.canvas.ignoresSafeArea()
 
-    // MARK: - Header
+            VStack(spacing: 0) {
+                Color.clear.frame(height: Self.topGutter)
+                page
+                Color.clear.frame(height: Self.bottomGutter)
+            }
+            .padding(.horizontal, Chamfer.Space.section)
 
-    /// Sits directly on the canvas with no surface of its own, so the cards
-    /// below are the only things floating.
-    private var header: some View {
-        HStack(alignment: .bottom, spacing: Chamfer.Space.regular) {
-            VStack(alignment: .leading, spacing: Chamfer.Space.tight) {
-                Text("Chamfer")
-                    .font(Chamfer.TypeScale.display)
-                    .foregroundStyle(Chamfer.Palette.textOnPaper)
-                Text(folderSummary)
-                    .font(Chamfer.TypeScale.body)
-                    .foregroundStyle(Chamfer.Palette.textOnPaperSoft)
+            // The close control lives in the gutter above the page and is
+            // revealed by moving towards it, so nothing sits over the note
+            // while you are reading.
+            VStack(spacing: 0) {
+                closeZone
+                Spacer(minLength: 0)
             }
-            Spacer()
-            if case let .sweeping(completed, total) = state.runState {
-                ProgressView(value: Double(completed), total: Double(total))
-                    .progressViewStyle(.linear)
-                    .tint(Chamfer.Palette.brass)
-                    .frame(width: 140)
+
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                BottomBar(items: items, selection: $tab)
+                    .padding(.bottom, Chamfer.Space.section)
             }
-            RunStateBadge(state.runState)
         }
     }
 
-    private var folderSummary: String {
-        guard !state.folders.isEmpty else { return "No folders watched yet" }
-        let notes = state.folders.reduce(0) { $0 + $1.noteCount }
-        let folders = state.folders.count == 1 ? "1 folder" : "\(state.folders.count) folders"
-        return "\(folders) · \(notes.formatted()) notes"
+    private var page: some View {
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Chamfer.Palette.page)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .chamferFloat()
     }
 
-    // MARK: - Queue
-
-    private var queue: some View {
-        VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
-            SectionHeader("Pending review", count: state.pendingProposals.count)
-            if state.folders.isEmpty {
-                Card(interactive: false) {
-                    EmptyState(
-                        symbol: "folder.badge.plus",
-                        title: "Point Chamfer at a folder",
-                        message: "Pick the folder your notes live in — an Obsidian vault, an iA Writer library, or any folder of Markdown. Nothing is changed until you say so."
-                    )
-                }
-            } else if state.pendingProposals.isEmpty {
-                Card(interactive: false) {
-                    EmptyState(
-                        symbol: emptyQueueSymbol,
-                        title: emptyQueueTitle,
-                        message: emptyQueueMessage
-                    )
-                }
+    @ViewBuilder
+    private var content: some View {
+        switch tab {
+        case Tab.apps:
+            FolderPage(folders: state.folders)
+        case Tab.review:
+            ReviewPage(proposals: state.pendingProposals)
+        default:
+            if let note = state.openNote {
+                NotePageView(note)
             } else {
-                LazyVStack(spacing: Chamfer.Space.regular) {
-                    ForEach(state.pendingProposals) { proposal in
-                        ProposalCard(proposal)
-                    }
-                }
+                PageMessage(
+                    title: "No note open",
+                    detail: "Pick a note from your vault and it will appear here."
+                )
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // The resting state has to tell the truth about *why* it is empty —
-    // "your notes are tidy" is a lie when rewrites are switched off.
-    private var rewritesDisabled: Bool {
-        if case .rewritingUnavailable = state.runState { return true }
-        return false
-    }
-
-    private var emptyQueueSymbol: String {
-        rewritesDisabled ? "wand.and.stars.inverse" : "checkmark.seal"
-    }
-
-    private var emptyQueueTitle: String {
-        rewritesDisabled ? "No rewrites to review" : "Nothing to review"
-    }
-
-    private var emptyQueueMessage: String {
-        rewritesDisabled
-            ? "Formatting rules are still running on every save. Turn Apple Intelligence back on and Chamfer will start suggesting rewrites again."
-            : "Your notes are tidy. Chamfer will queue anything it wants to rewrite here."
-    }
-
-    // MARK: - Rail
-
-    private var rail: some View {
-        VStack(alignment: .leading, spacing: Chamfer.Space.loose) {
-            VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
-                SectionHeader("Watching")
-                Card(padding: Chamfer.Space.regular) {
-                    if state.folders.isEmpty {
-                        Placeholder("No folders yet.")
-                    } else {
-                        VStack(spacing: Chamfer.Space.regular) {
-                            ForEach(state.folders) { folder in
-                                FolderRow(folder)
-                            }
-                        }
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
-                SectionHeader("Cleaned automatically")
-                Card(padding: Chamfer.Space.regular) {
-                    if state.recentlyCleaned.isEmpty {
-                        Placeholder("Nothing yet today.")
-                    } else {
-                        VStack(spacing: Chamfer.Space.regular) {
-                            ForEach(state.recentlyCleaned) { record in
-                                CleanupRow(record)
-                            }
-                        }
-                    }
-                }
+    private var closeZone: some View {
+        ZStack {
+            if pointerAtTop {
+                FloatingCloseButton(action: onClose)
+                    .transition(.opacity.combined(with: .offset(y: 6)))
             }
         }
+        .frame(maxWidth: .infinity)
+        .frame(height: Self.topGutter)
+        .contentShape(Rectangle())
+        .onHover { pointerAtTop = $0 }
+        .animation(Chamfer.Motion.quick, value: pointerAtTop)
     }
 }
 
-// MARK: - Rows
+// MARK: - Page contents
 
-private struct Placeholder: View {
-    @Environment(\.chamferSurface) private var surface
-
-    let text: String
-
-    init(_ text: String) {
-        self.text = text
-    }
+private struct PageMessage: View {
+    let title: String
+    let detail: String
 
     var body: some View {
-        Text(text)
-            .font(Chamfer.TypeScale.body)
-            .foregroundStyle(surface.textFaint)
+        VStack(spacing: Chamfer.Space.snug) {
+            Text(title)
+                .font(Chamfer.TypeScale.pageHeading)
+                .foregroundStyle(Chamfer.Palette.pageText)
+            Text(detail)
+                .font(Chamfer.TypeScale.body)
+                .foregroundStyle(Chamfer.Palette.pageTextSoft)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
-public struct FolderRow: View {
+private struct FolderPage: View {
     @Environment(\.chamferNow) private var now
-    @Environment(\.chamferSurface) private var surface
 
-    private let folder: WatchedFolder
+    let folders: [WatchedFolder]
 
-    public init(_ folder: WatchedFolder) {
-        self.folder = folder
-    }
-
-    public var body: some View {
-        HStack(alignment: .top, spacing: Chamfer.Space.snug) {
-            Image(systemName: folder.isReachable ? "folder" : "folder.badge.questionmark")
-                .font(.system(size: 12))
-                .foregroundStyle(folder.isReachable ? surface.textFaint : surface.danger)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: Chamfer.Space.hair) {
-                Text(folder.url.lastPathComponent)
-                    .font(Chamfer.TypeScale.bodyStrong)
-                    .foregroundStyle(surface.textPrimary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(detail)
-                    .font(Chamfer.TypeScale.caption)
-                    .foregroundStyle(folder.isReachable ? surface.textFaint : surface.danger)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+    var body: some View {
+        if folders.isEmpty {
+            PageMessage(
+                title: "No folders yet",
+                detail: "Point Chamfer at a folder of Markdown and it will start watching."
+            )
+        } else {
+            PageScroll(title: "Watching") {
+                ForEach(folders) { folder in
+                    VStack(alignment: .leading, spacing: Chamfer.Space.tight) {
+                        Text(folder.url.lastPathComponent)
+                            .font(Chamfer.TypeScale.pageHeading)
+                            .foregroundStyle(Chamfer.Palette.pageText)
+                        Text(detail(for: folder))
+                            .font(Chamfer.TypeScale.body)
+                            .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                    }
+                    .padding(.bottom, Chamfer.Space.loose)
+                }
             }
-            Spacer(minLength: 0)
         }
     }
 
-    private var detail: String {
+    private func detail(for folder: WatchedFolder) -> String {
         guard folder.isReachable else { return "Unreachable — reconnect the disk to resume" }
         let notes = "\(folder.noteCount.formatted()) notes"
         guard let sweep = folder.lastSweep else { return "\(notes) · sweeping now" }
@@ -208,33 +157,60 @@ public struct FolderRow: View {
     }
 }
 
-public struct CleanupRow: View {
-    @Environment(\.chamferNow) private var now
-    @Environment(\.chamferSurface) private var surface
+private struct ReviewPage: View {
+    let proposals: [Proposal]
 
-    private let record: CleanupRecord
-
-    public init(_ record: CleanupRecord) {
-        self.record = record
-    }
-
-    public var body: some View {
-        HStack(alignment: .top, spacing: Chamfer.Space.snug) {
-            Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(surface.positive)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: Chamfer.Space.hair) {
-                Text(record.note.title)
-                    .font(Chamfer.TypeScale.bodyStrong)
-                    .foregroundStyle(surface.textPrimary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text("\(record.rules.count) rule\(record.rules.count == 1 ? "" : "s") · \(RelativeTime.string(record.appliedAt, since: now))")
-                    .font(Chamfer.TypeScale.caption)
-                    .foregroundStyle(surface.textFaint)
+    var body: some View {
+        if proposals.isEmpty {
+            PageMessage(
+                title: "Nothing to review",
+                detail: "Rewrites waiting on your judgement will appear here."
+            )
+        } else {
+            PageScroll(title: "Pending review") {
+                ForEach(proposals) { proposal in
+                    VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
+                        Text(proposal.note.title)
+                            .font(Chamfer.TypeScale.pageHeading)
+                            .foregroundStyle(Chamfer.Palette.pageText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if let first = proposal.hunks.first {
+                            DiffHunkView(first)
+                        }
+                        HStack(spacing: Chamfer.Space.snug) {
+                            Button("Accept") {}.buttonStyle(ChamferButtonStyle(.primary))
+                            Button("Reject") {}.buttonStyle(ChamferButtonStyle(.secondary))
+                        }
+                    }
+                    .padding(.bottom, Chamfer.Space.section)
+                }
             }
-            Spacer(minLength: 0)
         }
+    }
+}
+
+/// Shared page chrome: the same measure and margins as the note page, so
+/// every tab reads as the same sheet of paper.
+private struct PageScroll<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(Chamfer.TypeScale.pageTitle)
+                    .foregroundStyle(Chamfer.Palette.pageText)
+                    .padding(.bottom, Chamfer.Space.loose)
+                content
+            }
+            .frame(maxWidth: 660, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, 56)
+            .padding(.top, 72)
+            .padding(.bottom, 96)
+        }
+        .scrollContentBackground(.hidden)
     }
 }

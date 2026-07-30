@@ -5,6 +5,8 @@ import SwiftUI
 
 /// Every component, every state, on one scrolling page.
 struct ComponentCatalog: View {
+    @State private var barSelection = "notes"
+
     private let typical = Fixtures.state(for: .typical)
     private let unreachable = Fixtures.state(for: .folderUnreachable)
     private let huge = Fixtures.state(for: .hugeNote)
@@ -13,7 +15,8 @@ struct ComponentCatalog: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Chamfer.Space.section) {
                 specimen("Palette") { palette }
-                specimen("Hover treatment — at rest and held open") { hoverPair }
+                specimen("Hover lift — at rest and held open") { hoverPair }
+                specimen("Bottom bar") { bar }
                 specimen("Surfaces — paper and ink") { surfaces }
                 specimen("Run state badges") {
                     HStack(spacing: Chamfer.Space.snug) {
@@ -89,15 +92,34 @@ struct ComponentCatalog: View {
                 .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous)
-                        .strokeBorder(
-                            glowing ? Chamfer.Palette.pinkSoft : Chamfer.Palette.paperStroke,
-                            lineWidth: 1
-                        )
+                        .strokeBorder(Chamfer.Palette.paperStroke, lineWidth: 1)
                 )
-                .chamferHoverGlow(isActive: glowing, cornerRadius: Chamfer.Radius.large)
+                .chamferHoverLift(isActive: glowing)
             }
         }
         .padding(.vertical, Chamfer.Space.roomy)
+    }
+
+    private var bar: some View {
+        VStack(spacing: Chamfer.Space.loose) {
+            // Normally only visible while the pointer is in the gutter above
+            // the page, so it is pinned open here to be inspectable.
+            FloatingCloseButton {}
+            barControl
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.vertical, Chamfer.Space.regular)
+    }
+
+    private var barControl: some View {
+        BottomBar(
+            items: [
+                .init(id: "apps", symbol: "macwindow", label: "Apps"),
+                .init(id: "review", symbol: "chevron.left.forwardslash.chevron.right", label: "Review"),
+                .init(id: "notes", symbol: "paperclip", label: "Notes")
+            ],
+            selection: $barSelection
+        )
     }
 
     /// The same components on both surfaces, since every one of them has to

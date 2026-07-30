@@ -74,7 +74,8 @@ public enum Fixtures {
                 runState: .idle,
                 folders: [vaultFolder(noteCount: 412), archiveFolder()],
                 proposals: typicalProposals(),
-                recentlyCleaned: recentCleanups()
+                recentlyCleaned: recentCleanups(),
+                openNote: openNote
             )
 
         case .flooded:
@@ -148,6 +149,12 @@ public enum Fixtures {
     }
 
     // MARK: - Pieces
+
+    /// The note sitting on the page.
+    public static let openNote = NoteDocument(
+        url: SampleNotes.url("Scheduling migration.md"),
+        text: SampleNotes.migrationBody
+    )
 
     static func vaultFolder(noteCount: Int, lastSweep: Date? = Fixtures.now.addingTimeInterval(-1_800)) -> WatchedFolder {
         WatchedFolder(url: SampleNotes.vault, noteCount: noteCount, lastSweep: lastSweep)

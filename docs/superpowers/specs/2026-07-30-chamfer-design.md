@@ -158,15 +158,18 @@ swift run ChamferGallery --scenario flooded
 
 ## Visual language
 
-Deep beige canvas, pale beige cards floating on it, dark ink for type. The
-theme is fixed rather than appearance-following: the beige is the identity.
+Deep beige canvas, one white page floating on it, black serif type on the page.
+The theme is fixed rather than appearance-following: the beige is the identity.
 
-Hovering never recolours a card. It rises, takes a heavier shadow, and a pink
-glitter diffusion blooms around its edges — soft bloom plus individual
-twinkling specks, so it reads as glitter rather than as a flat pink mist. The
-same treatment applies to sidebar rows, so pointing at something feels
-identical everywhere. It lives in one place, `HoverGlow`, and is applied with
-`.chamferHoverGlow(isActive:cornerRadius:)`.
+The window is deliberately plain: a single page, a capsule bar floating over
+it, and nothing else. The bar switches what the page shows — Apps, Review,
+Notes. A close control sits in the gutter above the page and is revealed only
+when the pointer moves into that gutter, so nothing hovers over the note while
+it is being read.
+
+Hovering never recolours anything. A surface rises and its shadow deepens,
+which is the whole treatment: `.chamferHoverLift(isActive:)`. Sidebar rows use
+it too, so pointing at something feels identical everywhere.
 
 Real wiring comes last. The watcher and the model backend fill the same
 `DashboardState` the fixtures produce today, so no view changes when they land.

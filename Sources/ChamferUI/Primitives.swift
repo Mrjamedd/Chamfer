@@ -6,9 +6,8 @@ import SwiftUI
 /// The one surface in the system: a pale beige card floating on deep beige
 /// canvas.
 ///
-/// Hovering does not recolour it. It rises, takes a heavier shadow, and a pink
-/// glitter diffusion blooms around its edges — the card stays beige throughout,
-/// so pointing at something never changes what it says.
+/// Hovering does not recolour it. It rises and its shadow deepens — the card
+/// stays beige throughout, so pointing at something never changes what it says.
 public struct Card<Content: View>: View {
     @State private var isHovered = false
 
@@ -36,13 +35,8 @@ public struct Card<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Chamfer.Palette.paper)
             .clipShape(shape)
-            .overlay(
-                shape.strokeBorder(
-                    isHovered ? Chamfer.Palette.pinkSoft : Chamfer.Palette.paperStroke,
-                    lineWidth: 1
-                )
-            )
-            .chamferHoverGlow(isActive: isHovered, cornerRadius: Chamfer.Radius.large)
+            .overlay(shape.strokeBorder(Chamfer.Palette.paperStroke, lineWidth: 1))
+            .chamferHoverLift(isActive: isHovered)
             .onHover { hovering in
                 guard interactive else { return }
                 isHovered = hovering
