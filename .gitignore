@@ -1,0 +1,16 @@
+.DS_Store
+/.build
+/Packages
+xcuserdata/
+DerivedData/
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.netrc
+AGENTS.md
+CLAUDE.md
+/.worktrees/
+
+# Local agent tooling (Claude Code / Codex) and editor backups
+/.claude/
+/.agents/
+*.bak
