@@ -212,6 +212,30 @@ public extension Chamfer {
     }
 }
 
+// MARK: - Page and window
+
+public extension Chamfer {
+    enum Page {
+        /// Width of the text column. At 17pt serif this is roughly 68
+        /// characters a line, inside the 60–75 that reads comfortably. The
+        /// previous 660 ran to about 88, which is why the lines felt long.
+        public static let measure: CGFloat = 540
+        /// Space between the column and the edge of the sheet.
+        public static let margin: CGFloat = 64
+        /// The sheet's natural width: column plus its margins.
+        public static var width: CGFloat { measure + margin * 2 }
+    }
+
+    /// Sized so the sheet gets its natural width with a little cream to spare,
+    /// and stands slightly taller than it is wide — a page, not a panel.
+    enum Window {
+        public static let defaultWidth: CGFloat = 780
+        public static let defaultHeight: CGFloat = 900
+        public static let minWidth: CGFloat = 620
+        public static let minHeight: CGFloat = 540
+    }
+}
+
 // MARK: - Type
 
 public extension Chamfer {

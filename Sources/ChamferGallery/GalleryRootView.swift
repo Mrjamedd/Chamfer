@@ -61,6 +61,7 @@ struct GalleryRootView: View {
                 collapse()
             }
         }
+        .frame(minWidth: Chamfer.Window.minWidth, minHeight: Chamfer.Window.minHeight)
         .environment(\.chamferNow, Fixtures.now)
     }
 

@@ -1,4 +1,5 @@
 import AppKit
+import ChamferUI
 import SwiftUI
 
 /// Stands in for the Xcode preview canvas, which isn't available on a
@@ -12,10 +13,11 @@ struct ChamferGalleryApp: App {
         WindowGroup("Chamfer Gallery") {
             GalleryRootView()
         }
-        .defaultSize(width: 1_280, height: 860)
+        .defaultSize(width: Chamfer.Window.defaultWidth, height: Chamfer.Window.defaultHeight)
         // No title bar, so the window is one continuous field of beige rather
         // than beige under a strip of system chrome.
         .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentMinSize)
     }
 }
 

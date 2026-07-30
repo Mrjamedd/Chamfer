@@ -17,9 +17,9 @@ public struct NotePageView: View {
                     view(for: block)
                 }
             }
-            .frame(maxWidth: 660, alignment: .leading)
+            .frame(maxWidth: Chamfer.Page.measure, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.horizontal, 56)
+            .padding(.horizontal, Chamfer.Page.margin)
             .padding(.top, 64)
             .padding(.bottom, 56)
         }

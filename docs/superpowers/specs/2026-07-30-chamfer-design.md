@@ -167,6 +167,12 @@ Notes. A close control sits in the gutter above the page and is revealed only
 when the pointer moves into that gutter, so nothing hovers over the note while
 it is being read.
 
+The window is sized off the page rather than the other way round. The text
+column is 540pt — about 68 characters a line at 17pt serif, inside the 60–75
+that reads comfortably — with 64pt margins, so the sheet wants 668pt. The
+window defaults to 780×900: enough for the sheet plus a little cream, and
+standing taller than it is wide, so it reads as a page rather than a panel.
+
 Hovering never recolours anything. A surface rises and its shadow deepens,
 which is the whole treatment: `.chamferHoverLift(isActive:)`. Sidebar rows use
 it too, so pointing at something feels identical everywhere.
