@@ -71,9 +71,13 @@ public struct DashboardView: View {
             VStack(spacing: 0) {
                 Color.clear.frame(height: Self.topGutter)
                 page
-                BottomBar(items: items, selection: $tab)
+                // Pass `.off` here to get the always-labelled, undimmed bar
+                // back; nothing else needs touching.
+                BottomBar(items: items, selection: $tab, idle: .standard)
                     .padding(.top, Chamfer.Space.loose)
-                    .padding(.bottom, Chamfer.Space.loose)
+                    // Lifted clear of the window's bottom edge so the pill
+                    // reads as floating rather than as resting on the sill.
+                    .padding(.bottom, Chamfer.Space.section + 2)
             }
             .padding(.horizontal, Chamfer.Space.section)
 

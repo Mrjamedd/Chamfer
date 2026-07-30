@@ -6,6 +6,55 @@ import SwiftUI
 /// them, so you can see what is waiting without leaving the page you are on.
 /// It grows out of its own layout bounds rather than pushing the page, which
 /// would reflow the note under the pointer.
+/// How the bar behaves when nobody is touching it.
+///
+/// Everything about the idle treatment lives here. Passing `.off` to the bar
+/// restores the always-labelled, full-opacity version exactly as it was — one
+/// value to change, nothing to unpick.
+public struct BarIdleBehaviour: Sendable {
+    /// Set false and the bar never collapses or dims.
+    public var collapses: Bool
+    /// Quiet time before the labels fold away.
+    public var delay: Duration
+    /// How far the bar fades once it has settled.
+    public var restingOpacity: Double
+    /// Extra breadth given to the destination you are currently on.
+    public var activeExtraPadding: CGFloat
+    public var curve: Animation
+
+    public init(
+        collapses: Bool,
+        delay: Duration,
+        restingOpacity: Double,
+        activeExtraPadding: CGFloat,
+        curve: Animation
+    ) {
+        self.collapses = collapses
+        self.delay = delay
+        self.restingOpacity = restingOpacity
+        self.activeExtraPadding = activeExtraPadding
+        self.curve = curve
+    }
+
+    public static let standard = BarIdleBehaviour(
+        collapses: true,
+        delay: .seconds(3.5),
+        restingOpacity: 0.82,
+        activeExtraPadding: 5,
+        // ~220ms, soft.
+        curve: .spring(response: 0.22, dampingFraction: 0.86)
+    )
+
+    /// The previous behaviour: always labelled, never dimmed.
+    public static let off = BarIdleBehaviour(
+        collapses: false,
+        delay: .seconds(3.5),
+        restingOpacity: 1,
+        activeExtraPadding: 0,
+        curve: .spring(response: 0.22, dampingFraction: 0.86)
+    )
+}
+
 public struct BottomBar: View {
     public struct Entry: Identifiable, Hashable, Sendable {
         public let id: String
@@ -50,6 +99,8 @@ public struct BottomBar: View {
     @State private var isSplit = false
     @State private var closeHovered = false
     @State private var pressedItem: String?
+    @State private var labelsShown = true
+    @State private var idleTask: Task<Void, Never>?
     @State private var itemFrames: [String: CGRect] = [:]
     @State private var pointerInRow = false
     @State private var pointerInList = false
@@ -62,6 +113,7 @@ public struct BottomBar: View {
     @FocusState private var searchFocused: Bool
 
     private let items: [Item]
+    private let idle: BarIdleBehaviour
 
     // Proportioned off the reference: the slab is a little under four times
     // the cap height of its labels, not six.
@@ -80,8 +132,13 @@ public struct BottomBar: View {
     private static let splitHysteresis: CGFloat = 40
     private static let rowSpace = "chamfer.bar.row"
 
-    public init(items: [Item], selection: Binding<String>) {
+    public init(
+        items: [Item],
+        selection: Binding<String>,
+        idle: BarIdleBehaviour = .standard
+    ) {
         self.items = items
+        self.idle = idle
         _selection = selection
     }
 
@@ -141,6 +198,8 @@ public struct BottomBar: View {
         }
         .onExitCommand(perform: endSearch)
         .fixedSize()
+        .opacity(labelsShown || isSearching ? 1 : idle.restingOpacity)
+        .task { settle() }
         // Searching lifts the bar clear of the bottom edge so the field sits
         // where you are looking rather than at the foot of the window.
         .offset(y: isSearching ? -Self.searchLift : 0)
@@ -217,11 +276,30 @@ public struct BottomBar: View {
     private func pointer(inRow: Bool) {
         pointerInRow = inRow
         inRow ? cancelClose() : scheduleClose()
+        settle()
     }
 
     private func pointer(inList: Bool) {
         pointerInList = inList
         inList ? cancelClose() : scheduleClose()
+        settle()
+    }
+
+    /// Wakes the bar and restarts the quiet clock. Once it runs out, and only
+    /// if nothing is being pointed at, pressed or typed into, the labels fold
+    /// away and the bar dims to its resting state.
+    private func settle() {
+        guard idle.collapses else { return }
+        idleTask?.cancel()
+        if !labelsShown {
+            withAnimation(idle.curve) { labelsShown = true }
+        }
+        idleTask = Task { @MainActor in
+            try? await Task.sleep(for: idle.delay)
+            guard !Task.isCancelled else { return }
+            guard !pointerInRow, !pointerInList, !isSearching, pressedItem == nil else { return }
+            withAnimation(idle.curve) { labelsShown = false }
+        }
     }
 
     private var expandedItem: Item? {
@@ -405,6 +483,9 @@ public struct BottomBar: View {
                 BarButton(
                     item: item,
                     isPressed: item.id == pressedItem,
+                    isActive: item.id == selection,
+                    showsLabel: labelsShown,
+                    extraPadding: idle.activeExtraPadding,
                     onHover: { inside in
                         guard inside, !isSearching, pressedItem == nil else { return }
                         let opens = !item.entries.isEmpty || item.showsSearch
@@ -444,6 +525,7 @@ public struct BottomBar: View {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.rowSpace))
             .onChanged { value in
                 guard !isSearching else { return }
+                settle()
                 let landed = item(at: value.location.x)
                 guard landed != pressedItem else { return }
                 if landed != nil { Haptics.pop() }
@@ -470,6 +552,11 @@ public struct BottomBar: View {
 
         let item: Item
         let isPressed: Bool
+        /// The destination currently being shown, which is given a little more
+        /// room than its neighbours — the only thing that marks it.
+        let isActive: Bool
+        let showsLabel: Bool
+        let extraPadding: CGFloat
         let onHover: (Bool) -> Void
 
         private var shape: RoundedRectangle {
@@ -477,14 +564,21 @@ public struct BottomBar: View {
         }
 
         var body: some View {
-            HStack(spacing: Chamfer.Space.tight + 2) {
+            HStack(spacing: showsLabel ? Chamfer.Space.tight + 2 : 0) {
                 Image(systemName: item.symbol)
                     .font(.system(size: 11, weight: .regular))
-                Text(item.label)
-                    .font(.system(size: 12.5, weight: .medium))
+                if showsLabel {
+                    Text(item.label)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .fixedSize()
+                        // Fading and squeezing rather than being removed, so
+                        // the pill's width carries the motion instead of the
+                        // text popping out of it.
+                        .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .leading)))
+                }
             }
             .foregroundStyle(Chamfer.Palette.textOnPaper)
-            .padding(.horizontal, Chamfer.Space.regular - 1)
+            .padding(.horizontal, Chamfer.Space.regular - 1 + (isActive ? extraPadding : 0))
             .padding(.vertical, Chamfer.Space.tight)
             // The glass pill covers the fill while pressed, so the hover tint
             // would only muddy it.
