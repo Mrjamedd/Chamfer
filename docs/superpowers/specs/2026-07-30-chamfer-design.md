@@ -135,6 +135,30 @@ conforming to `Rewriter`, with no change anywhere else.
 `Scripts/test.sh` wraps `swift test` with the Command Line Tools framework
 search paths; plain `swift test` fails on this machine.
 
+## Development approach
+
+This project is also a place to practise dashboard UI, so it is built UI-first
+against a fake data layer rather than backend-first.
+
+`ChamferFixtures` produces a `DashboardState` for each scenario the dashboard
+has to survive: first run, resting, 200 pending, one 12,400-word note, a
+code-heavy note, mid-sweep, rewrites unavailable, folder unreachable, failed.
+Those scenarios are the design brief — a layout that only holds up under the
+typical case is not finished.
+
+`ChamferUI` holds the design system and depends only on `ChamferCore`, so it
+cannot reach for app state and stays reusable by construction.
+`ChamferGallery` is an executable that renders every scenario and every
+component in both appearances. It exists because this machine has Command Line
+Tools rather than Xcode, so there is no preview canvas:
+
+```sh
+swift run ChamferGallery --scenario flooded --dark
+```
+
+Real wiring comes last. The watcher and the model backend fill the same
+`DashboardState` the fixtures produce today, so no view changes when they land.
+
 ## Scope
 
 **v1:** one watched folder, the eight rules above, the review queue with

@@ -12,20 +12,44 @@ let package = Package(
     ],
     products: [
         .executable(name: "Chamfer", targets: ["Chamfer"]),
-        .library(name: "ChamferCore", targets: ["ChamferCore"])
+        .executable(name: "ChamferGallery", targets: ["ChamferGallery"]),
+        .library(name: "ChamferCore", targets: ["ChamferCore"]),
+        .library(name: "ChamferUI", targets: ["ChamferUI"])
     ],
     targets: [
         .executableTarget(
             // Menu bar shell, review window, settings.
             name: "Chamfer",
-            dependencies: ["ChamferCore", "ChamferWatch", "ChamferRewrite"],
+            dependencies: ["ChamferCore", "ChamferUI", "ChamferWatch", "ChamferRewrite"],
             path: "Sources/Chamfer"
+        ),
+        .executableTarget(
+            // Stands in for the Xcode preview canvas: every component in every
+            // state, driven by fixtures. This is the design iteration loop.
+            name: "ChamferGallery",
+            dependencies: ["ChamferUI", "ChamferFixtures"],
+            path: "Sources/ChamferGallery"
         ),
         .target(
             // Pure logic: document model, rule engine, diffing, masking.
             // No file I/O, no network, no UI, so it stays fully testable.
             name: "ChamferCore",
             path: "Sources/ChamferCore"
+        ),
+        .target(
+            // The design system: tokens, primitives, components, and views
+            // composed from them. Depends only on ChamferCore, so it cannot
+            // reach for app state and stays reusable by construction.
+            name: "ChamferUI",
+            dependencies: ["ChamferCore"],
+            path: "Sources/ChamferUI"
+        ),
+        .target(
+            // The fake data layer. Real shapes, deliberately hostile values.
+            // Kept out of ChamferCore so none of it can ship in the app.
+            name: "ChamferFixtures",
+            dependencies: ["ChamferCore"],
+            path: "Sources/ChamferFixtures"
         ),
         .target(
             // FSEvents watching, debounce, atomic writes, snapshot history.
