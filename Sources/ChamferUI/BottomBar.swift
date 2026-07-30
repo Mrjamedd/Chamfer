@@ -401,7 +401,6 @@ public struct BottomBar: View {
             ForEach(items) { item in
                 BarButton(
                     item: item,
-                    isSelected: item.id == selection,
                     isPressed: item.id == pressedItem,
                     onHover: { inside in
                         guard inside, !isSearching, pressedItem == nil else { return }
@@ -467,7 +466,6 @@ public struct BottomBar: View {
         @State private var isHovered = false
 
         let item: Item
-        let isSelected: Bool
         let isPressed: Bool
         let onHover: (Bool) -> Void
 
