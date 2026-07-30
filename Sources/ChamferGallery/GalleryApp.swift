@@ -13,6 +13,9 @@ struct ChamferGalleryApp: App {
             GalleryRootView()
         }
         .defaultSize(width: 1_280, height: 860)
+        // No title bar, so the window is one continuous field of beige rather
+        // than beige under a strip of system chrome.
+        .windowStyle(.hiddenTitleBar)
     }
 }
 

@@ -20,8 +20,8 @@ public struct NotePageView: View {
             .frame(maxWidth: 660, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, 56)
-            .padding(.top, 72)
-            .padding(.bottom, 96)
+            .padding(.top, 64)
+            .padding(.bottom, 56)
         }
         .scrollContentBackground(.hidden)
         .background(Chamfer.Palette.page)

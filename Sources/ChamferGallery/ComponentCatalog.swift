@@ -114,9 +114,9 @@ struct ComponentCatalog: View {
     private var barControl: some View {
         BottomBar(
             items: [
-                .init(id: "apps", symbol: "macwindow", label: "Apps"),
-                .init(id: "review", symbol: "chevron.left.forwardslash.chevron.right", label: "Review"),
-                .init(id: "notes", symbol: "paperclip", label: "Notes")
+                .init(id: "notes", symbol: "doc.text", label: "Notes"),
+                .init(id: "review", symbol: "checkmark.circle", label: "Review"),
+                .init(id: "models", symbol: "cpu", label: "Models")
             ],
             selection: $barSelection
         )

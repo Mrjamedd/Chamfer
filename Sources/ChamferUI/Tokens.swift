@@ -12,16 +12,17 @@ public extension Chamfer {
     /// dark ink, one pink highlight. The look is the brand, so it does not
     /// change with the system setting.
     enum Palette {
-        // Paper. The canvas is deliberately deep and saturated so the cards,
-        // which stay pale, lift off it without needing heavy shadows.
-        public static let canvas = rgb(0xDCCEB4)
-        public static let canvasDeep = rgb(0xD1C1A2)
-        public static let paper = rgb(0xF7F2E8)
-        public static let paperSunken = rgb(0xEDE4D3)
-        public static let paperStroke = rgb(0xCFC0A6)
+        // Warm cream throughout, with the page only a shade lighter than the
+        // canvas it sits on. Separation comes from the shadow, not from
+        // contrast.
+        public static let canvas = rgb(0xF8EEDC)
+        public static let canvasDeep = rgb(0xF0E4CE)
+        public static let paper = rgb(0xFFFBF5)
+        public static let paperSunken = rgb(0xF2E7D4)
+        public static let paperStroke = rgb(0xE6D9C1)
 
-        // The note page: white, with black type on it.
-        public static let page = rgb(0xFFFDFA)
+        // The note page: the lightest surface, with black type on it.
+        public static let page = rgb(0xFFFCF7)
         public static let pageText = rgb(0x14110E)
         public static let pageTextSoft = rgb(0x5A5248)
 

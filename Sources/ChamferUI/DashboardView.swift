@@ -1,8 +1,8 @@
 import ChamferCore
 import SwiftUI
 
-/// The whole window: one page floating on beige, a bar floating over the page,
-/// and a close control that only appears when you reach for it.
+/// The whole window: one page floating on beige, a bar sitting under it, and a
+/// close control that only appears when you reach for it.
 public struct DashboardView: View {
     @State private var tab: String
     @State private var pointerAtTop = false
@@ -10,8 +10,7 @@ public struct DashboardView: View {
     private let state: DashboardState
     private let onClose: () -> Void
 
-    private static let topGutter: CGFloat = 54
-    private static let bottomGutter: CGFloat = 20
+    private static let topGutter: CGFloat = 52
 
     public init(state: DashboardState, tab: String = Tab.notes, onClose: @escaping () -> Void = {}) {
         self.state = state
@@ -20,43 +19,36 @@ public struct DashboardView: View {
     }
 
     public enum Tab {
-        public static let apps = "apps"
-        public static let review = "review"
         public static let notes = "notes"
+        public static let review = "review"
+        public static let models = "models"
     }
 
     private var items: [BottomBar.Item] {
         [
-            .init(id: Tab.apps, symbol: "macwindow", label: "Apps"),
-            .init(id: Tab.review, symbol: "chevron.left.forwardslash.chevron.right", label: "Review"),
-            .init(id: Tab.notes, symbol: "paperclip", label: "Notes")
+            .init(id: Tab.notes, symbol: "doc.text", label: "Notes"),
+            .init(id: Tab.review, symbol: "checkmark.circle", label: "Review"),
+            .init(id: Tab.models, symbol: "cpu", label: "Models")
         ]
     }
 
     public var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             Chamfer.Palette.canvas.ignoresSafeArea()
 
             VStack(spacing: 0) {
                 Color.clear.frame(height: Self.topGutter)
                 page
-                Color.clear.frame(height: Self.bottomGutter)
+                BottomBar(items: items, selection: $tab)
+                    .padding(.top, Chamfer.Space.loose)
+                    .padding(.bottom, Chamfer.Space.loose)
             }
             .padding(.horizontal, Chamfer.Space.section)
 
             // The close control lives in the gutter above the page and is
             // revealed by moving towards it, so nothing sits over the note
             // while you are reading.
-            VStack(spacing: 0) {
-                closeZone
-                Spacer(minLength: 0)
-            }
-
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                BottomBar(items: items, selection: $tab)
-                    .padding(.bottom, Chamfer.Space.section)
-            }
+            closeZone
         }
     }
 
@@ -71,10 +63,10 @@ public struct DashboardView: View {
     @ViewBuilder
     private var content: some View {
         switch tab {
-        case Tab.apps:
-            FolderPage(folders: state.folders)
         case Tab.review:
             ReviewPage(proposals: state.pendingProposals)
+        case Tab.models:
+            ModelsPage(runState: state.runState)
         default:
             if let note = state.openNote {
                 NotePageView(note)
@@ -121,42 +113,6 @@ private struct PageMessage: View {
     }
 }
 
-private struct FolderPage: View {
-    @Environment(\.chamferNow) private var now
-
-    let folders: [WatchedFolder]
-
-    var body: some View {
-        if folders.isEmpty {
-            PageMessage(
-                title: "No folders yet",
-                detail: "Point Chamfer at a folder of Markdown and it will start watching."
-            )
-        } else {
-            PageScroll(title: "Watching") {
-                ForEach(folders) { folder in
-                    VStack(alignment: .leading, spacing: Chamfer.Space.tight) {
-                        Text(folder.url.lastPathComponent)
-                            .font(Chamfer.TypeScale.pageHeading)
-                            .foregroundStyle(Chamfer.Palette.pageText)
-                        Text(detail(for: folder))
-                            .font(Chamfer.TypeScale.body)
-                            .foregroundStyle(Chamfer.Palette.pageTextSoft)
-                    }
-                    .padding(.bottom, Chamfer.Space.loose)
-                }
-            }
-        }
-    }
-
-    private func detail(for folder: WatchedFolder) -> String {
-        guard folder.isReachable else { return "Unreachable — reconnect the disk to resume" }
-        let notes = "\(folder.noteCount.formatted()) notes"
-        guard let sweep = folder.lastSweep else { return "\(notes) · sweeping now" }
-        return "\(notes) · swept \(RelativeTime.string(sweep, since: now))"
-    }
-}
-
 private struct ReviewPage: View {
     let proposals: [Proposal]
 
@@ -190,8 +146,62 @@ private struct ReviewPage: View {
     }
 }
 
-/// Shared page chrome: the same measure and margins as the note page, so
-/// every tab reads as the same sheet of paper.
+/// Which local model does the rewriting, and whether it can right now.
+private struct ModelsPage: View {
+    let runState: RunState
+
+    var body: some View {
+        PageScroll(title: "Models") {
+            ForEach(backends, id: \.name) { backend in
+                VStack(alignment: .leading, spacing: Chamfer.Space.tight) {
+                    HStack(spacing: Chamfer.Space.snug) {
+                        Text(backend.name)
+                            .font(Chamfer.TypeScale.pageHeading)
+                            .foregroundStyle(Chamfer.Palette.pageText)
+                        Pill(backend.status, tone: backend.tone)
+                    }
+                    Text(backend.detail)
+                        .font(Chamfer.TypeScale.body)
+                        .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.bottom, Chamfer.Space.loose)
+            }
+        }
+    }
+
+    private var appleUnavailableReason: String? {
+        if case let .rewritingUnavailable(reason) = runState { return reason }
+        return nil
+    }
+
+    private var backends: [(name: String, status: String, tone: Pill.Tone, detail: String)] {
+        [
+            (
+                "Apple Foundation Models",
+                appleUnavailableReason == nil ? "Active" : "Unavailable",
+                appleUnavailableReason == nil ? .positive : .danger,
+                appleUnavailableReason
+                    ?? "The on-device model built into macOS. Nothing to download, nothing leaves the Mac."
+            ),
+            (
+                "Ollama",
+                "Not configured",
+                .neutral,
+                "Point Chamfer at a local Ollama server to use a larger model, if this Mac has the memory for it."
+            ),
+            (
+                "Bundled MLX",
+                "Not installed",
+                .neutral,
+                "Ships a small model inside the app. Works without Apple Intelligence, at the cost of a large download."
+            )
+        ]
+    }
+}
+
+/// Shared page chrome: the same measure and margins everywhere, so every tab
+/// reads as the same sheet of paper.
 private struct PageScroll<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
@@ -208,8 +218,8 @@ private struct PageScroll<Content: View>: View {
             .frame(maxWidth: 660, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, 56)
-            .padding(.top, 72)
-            .padding(.bottom, 96)
+            .padding(.top, 64)
+            .padding(.bottom, 56)
         }
         .scrollContentBackground(.hidden)
     }
