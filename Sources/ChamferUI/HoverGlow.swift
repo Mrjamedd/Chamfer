@@ -29,6 +29,30 @@ public extension View {
         modifier(HoverLift(isActive: isActive, lift: lift))
     }
 
+    /// The app's one hover signal: a faint pink ring traced around the
+    /// surface. Every interactive thing uses this and nothing else does, so
+    /// the ring means exactly one thing wherever it appears.
+    func chamferHoverRing(_ isActive: Bool, radius: CGFloat) -> some View {
+        overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(Chamfer.Palette.ring, lineWidth: Chamfer.Palette.ringWidth)
+                .opacity(isActive ? 1 : 0)
+                .allowsHitTesting(false)
+        )
+        .animation(Chamfer.Motion.quick, value: isActive)
+    }
+
+    /// Circular surfaces get the same ring.
+    func chamferHoverRingCircle(_ isActive: Bool) -> some View {
+        overlay(
+            Circle()
+                .strokeBorder(Chamfer.Palette.ring, lineWidth: Chamfer.Palette.ringWidth)
+                .opacity(isActive ? 1 : 0)
+                .allowsHitTesting(false)
+        )
+        .animation(Chamfer.Motion.quick, value: isActive)
+    }
+
     /// The resting shadow for anything floating on the canvas.
     func chamferFloat(radius: CGFloat = 26, y: CGFloat = 14, opacity: Double = 0.13) -> some View {
         shadow(color: .black.opacity(opacity), radius: radius, y: y)

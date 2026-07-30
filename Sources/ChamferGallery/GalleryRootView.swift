@@ -214,6 +214,7 @@ struct SidebarRow: View {
             )
         }
         .buttonStyle(.plain)
+        .chamferHoverRing(isHovered, radius: Chamfer.Radius.medium)
         .chamferHoverLift(isActive: isHovered, lift: 3)
         .onHover { isHovered = $0 }
     }

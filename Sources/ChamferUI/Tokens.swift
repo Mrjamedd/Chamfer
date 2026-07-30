@@ -24,10 +24,11 @@ public extension Chamfer {
         /// object rather than as part of the background.
         public static let bar = rgb(0xE8DBC4)
         public static let barStroke = rgb(0xDCCBAE)
-        /// Selection is a ring, not a fill. Soft enough to sit under text
-        /// without competing, pink enough to find at a glance.
-        public static let ring = rgb(0xE79BC0).opacity(0.75)
-        public static let ringWidth: CGFloat = 1.5
+        /// The hover ring: the one signal that says "the pointer is on this",
+        /// used by every interactive surface in the app. Deliberately barely
+        /// there — it should be felt more than seen.
+        public static let ring = rgb(0xE79BC0).opacity(0.38)
+        public static let ringWidth: CGFloat = 1
 
         // The note page: the lightest surface, with black type on it.
         public static let page = rgb(0xFFFCF7)

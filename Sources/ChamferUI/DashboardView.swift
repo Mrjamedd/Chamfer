@@ -6,6 +6,7 @@ import SwiftUI
 public struct DashboardView: View {
     @State private var tab: String
     @State private var pointerAtTop = false
+    @State private var closeHovered = false
 
     private let state: DashboardState
     private let onClose: () -> Void
@@ -84,11 +85,15 @@ public struct DashboardView: View {
     }
 
     private var page: some View {
+        // Reaching for the close control shrinks the page a little, so the
+        // gesture is answered before it is committed.
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Chamfer.Palette.page)
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .chamferFloat()
+            .scaleEffect(closeHovered ? 0.975 : 1)
+            .animation(.spring(response: 0.38, dampingFraction: 0.85), value: closeHovered)
     }
 
     @ViewBuilder
@@ -113,7 +118,7 @@ public struct DashboardView: View {
     private var closeZone: some View {
         ZStack {
             if pointerAtTop {
-                FloatingCloseButton(action: onClose)
+                FloatingCloseButton(onHover: { closeHovered = $0 }, action: onClose)
                     .transition(.opacity.combined(with: .offset(y: 6)))
             }
         }

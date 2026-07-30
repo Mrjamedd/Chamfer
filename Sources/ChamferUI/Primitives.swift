@@ -36,6 +36,7 @@ public struct Card<Content: View>: View {
             .background(Chamfer.Palette.paper)
             .clipShape(shape)
             .overlay(shape.strokeBorder(Chamfer.Palette.paperStroke, lineWidth: 1))
+            .chamferHoverRing(isHovered, radius: Chamfer.Radius.large)
             .chamferHoverLift(isActive: isHovered)
             .onHover { hovering in
                 guard interactive else { return }
@@ -113,6 +114,7 @@ public struct ChamferButtonStyle: ButtonStyle {
     /// Not named `Body` — that collides with `ButtonStyle`'s associated type.
     private struct StyledLabel: View {
         @Environment(\.chamferSurface) private var surface
+        @State private var isHovered = false
 
         let configuration: Configuration
         let emphasis: Emphasis
@@ -129,6 +131,8 @@ public struct ChamferButtonStyle: ButtonStyle {
                     RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
                         .strokeBorder(border, lineWidth: 1)
                 )
+                .chamferHoverRing(isHovered, radius: Chamfer.Radius.small)
+                .onHover { isHovered = $0 }
                 .opacity(configuration.isPressed ? 0.72 : 1)
                 .animation(Chamfer.Motion.quick, value: configuration.isPressed)
         }

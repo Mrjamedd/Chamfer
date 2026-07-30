@@ -49,6 +49,7 @@ public struct BottomBar: View {
     @State private var isSearching = false
     @State private var isSplit = false
     @State private var closeHovered = false
+    @State private var slabHovered = false
     @State private var pressedItem: String?
     @State private var itemFrames: [String: CGRect] = [:]
     @State private var pointerInRow = false
@@ -113,11 +114,9 @@ public struct BottomBar: View {
                     .allowsHitTesting(isSearching)
             }
             .frame(width: isSearching ? fieldWidth : collapsedWidth)
-            .barSurface(
-                radius: Self.radius,
-                stroke: isSearching ? Chamfer.Palette.ring : Chamfer.Palette.barStroke,
-                strokeWidth: isSearching ? Chamfer.Palette.ringWidth : 1
-            )
+            .barSurface(radius: Self.radius)
+            .chamferHoverRing(slabHovered, radius: Self.radius)
+            .onHover { slabHovered = $0 }
 
             closeCircle
         }
@@ -252,6 +251,7 @@ public struct BottomBar: View {
             )
             .frame(width: isSplit ? Self.collapsedHeight : 0)
             .opacity(isSplit ? 1 : 0)
+            .chamferHoverRingCircle(closeHovered)
             .contentShape(Circle())
             .onHover { inside in
                 guard isSplit else { return }
@@ -354,6 +354,7 @@ public struct BottomBar: View {
             .frame(height: 20)
             .background(isHovered ? Chamfer.Palette.paper.opacity(0.75) : .clear)
             .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small - 2, style: .continuous))
+            .chamferHoverRing(isHovered, radius: Chamfer.Radius.small - 2)
             .contentShape(Rectangle())
             .onHover { isHovered = $0 }
         }
@@ -382,6 +383,7 @@ public struct BottomBar: View {
                 .frame(height: 20)
                 .background(isHovered ? Chamfer.Palette.paper.opacity(0.75) : .clear)
                 .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small - 2, style: .continuous))
+                .chamferHoverRing(isHovered, radius: Chamfer.Radius.small - 2)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -487,21 +489,13 @@ public struct BottomBar: View {
             // would only muddy it.
             .background(isHovered && !isPressed ? Chamfer.Palette.paper.opacity(0.6) : .clear)
             .clipShape(shape)
-            // Selection is a soft pink ring rather than a fill: legible at a
-            // glance, quiet enough to sit under the text without competing.
-            .overlay(
-                shape.strokeBorder(
-                    isSelected ? Chamfer.Palette.ring : .clear,
-                    lineWidth: Chamfer.Palette.ringWidth
-                )
-            )
+            .chamferHoverRing(isHovered && !isPressed, radius: Chamfer.Radius.medium)
             .contentShape(shape)
             .onHover { inside in
                 isHovered = inside
                 onHover(inside)
             }
             .animation(Chamfer.Motion.quick, value: isHovered)
-            .animation(Chamfer.Motion.quick, value: isSelected)
         }
     }
 }
@@ -530,8 +524,10 @@ public struct FloatingCloseButton: View {
     @State private var isHovered = false
 
     private let action: () -> Void
+    private let onHover: (Bool) -> Void
 
-    public init(action: @escaping () -> Void) {
+    public init(onHover: @escaping (Bool) -> Void = { _ in }, action: @escaping () -> Void) {
+        self.onHover = onHover
         self.action = action
     }
 
@@ -549,8 +545,12 @@ public struct FloatingCloseButton: View {
                 .overlay(Circle().strokeBorder(Chamfer.Palette.barStroke, lineWidth: 1))
         }
         .buttonStyle(.plain)
+        .chamferHoverRingCircle(isHovered)
         .chamferFloat(radius: 14, y: 6, opacity: 0.18)
-        .onHover { isHovered = $0 }
+        .onHover { inside in
+            isHovered = inside
+            onHover(inside)
+        }
         .animation(Chamfer.Motion.quick, value: isHovered)
     }
 }
