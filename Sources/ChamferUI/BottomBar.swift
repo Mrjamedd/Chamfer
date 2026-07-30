@@ -52,6 +52,10 @@ public struct BottomBar: View {
     @State private var pointerInList = false
     @State private var closeTask: Task<Void, Never>?
     @State private var query = ""
+    /// The destinations' natural width, measured once so the slab can animate
+    /// between it and the field's width instead of jumping between an
+    /// intrinsic size and a fixed one.
+    @State private var collapsedWidth: CGFloat = 320
     @FocusState private var searchFocused: Bool
 
     private let items: [Item]
@@ -87,16 +91,49 @@ public struct BottomBar: View {
         .frame(height: Self.collapsedHeight, alignment: .bottom)
     }
 
+    /// One surface throughout, not two that swap.
+    ///
+    /// Searching widens this same slab and swaps what is inside it, so the bar
+    /// rises and stretches into the field in a single motion. Cross-fading two
+    /// separate surfaces reads as one thing vanishing and another arriving,
+    /// which is what made it look like the field simply appeared.
     private var slab: some View {
-        Group {
-            if isSearching {
-                searchLayer
-            } else {
+        HStack(spacing: isSplit ? Chamfer.Space.snug + 2 : 0) {
+            ZStack(alignment: .bottom) {
                 destinations
-                    .barSurface(radius: Self.radius)
-                    .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
+                    .opacity(isSearching ? 0 : 1)
+                    .allowsHitTesting(!isSearching)
+                field
+                    .frame(height: Self.collapsedHeight)
+                    .opacity(isSearching ? 1 : 0)
+                    .allowsHitTesting(isSearching)
+            }
+            .frame(width: isSearching ? fieldWidth : collapsedWidth)
+            .barSurface(radius: Self.radius)
+
+            closeCircle
+        }
+        .contentShape(Rectangle())
+        // Measured against the pair's total width, which is constant whether
+        // split or not — the field gives up exactly the space the circle
+        // takes — so the boundary never moves under the pointer. Separate
+        // thresholds for opening and closing, so a pointer resting on the
+        // boundary cannot chatter the circle in and out.
+        .onContinuousHover { hover in
+            // Hover keeps arriving while the layer animates out; without this
+            // the split survives the close and the next search opens already
+            // split apart.
+            guard isSearching, case let .active(location) = hover else { return }
+            let opensAt = Self.searchWidth - Self.splitZone
+            let closesAt = opensAt - Self.splitHysteresis
+            if !isSplit, location.x > opensAt {
+                Haptics.pop()
+                withAnimation(Self.splitCurve) { isSplit = true }
+            } else if isSplit, location.x < closesAt {
+                withAnimation(Self.splitCurve) { isSplit = false }
             }
         }
+        .onExitCommand(perform: endSearch)
         .fixedSize()
         // Searching lifts the bar clear of the bottom edge so the field sits
         // where you are looking rather than at the foot of the window.
@@ -114,7 +151,7 @@ public struct BottomBar: View {
     }
 
     static let openCurve = Animation.spring(response: 0.34, dampingFraction: 0.82)
-    static let searchCurve = Animation.spring(response: 0.5, dampingFraction: 0.78)
+    static let searchCurve = Animation.spring(response: 0.32, dampingFraction: 0.78)
     static let splitCurve = Animation.spring(response: 0.34, dampingFraction: 0.7)
 
     private var destinations: some View {
@@ -137,6 +174,10 @@ public struct BottomBar: View {
             }
             row
                 .onHover { pointer(inRow: $0) }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                    guard width > 0 else { return }
+                    collapsedWidth = width
+                }
         }
     }
 
@@ -184,56 +225,22 @@ public struct BottomBar: View {
 
     // MARK: - Search
 
-    /// The field, and — once the pointer reaches the right-hand end — a close
-    /// button that detaches from it into its own circle. The pair always
-    /// occupies the same total width, so the field gives up exactly the space
-    /// the circle takes and nothing jumps sideways.
-    private var searchLayer: some View {
-        HStack(spacing: isSplit ? Chamfer.Space.snug + 2 : 0) {
-            field
-                .frame(width: fieldWidth, height: Self.collapsedHeight)
-                .barSurface(radius: Self.radius)
-            // Always present, never inserted. A view that is added and removed
-            // is being scaled by its transition at exactly the moment you aim
-            // at it, which is how clicks got missed; animating its width keeps
-            // one stable target.
-            Image(systemName: "xmark")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Chamfer.Palette.textOnPaper)
-                .frame(width: Self.collapsedHeight, height: Self.collapsedHeight)
-                .barSurface(radius: Self.collapsedHeight / 2)
-                .frame(width: isSplit ? Self.collapsedHeight : 0)
-                .opacity(isSplit ? 1 : 0)
-                .contentShape(Circle())
-                // A tap gesture rather than a Button: while the field holds
-                // focus, the first click on a button is spent moving first
-                // responder instead of activating it, which is why it took two.
-                .onTapGesture { endSearch() }
-                .allowsHitTesting(isSplit)
-        }
-        .frame(width: Self.searchWidth, alignment: .leading)
-        .contentShape(Rectangle())
-        // Measured against the pair's total width, which is constant whether
-        // split or not — the field gives up exactly the space the circle
-        // takes — so the boundary never moves under the pointer. Separate
-        // thresholds for opening and closing, so a pointer resting on the
-        // boundary cannot chatter the circle in and out.
-        .onContinuousHover { hover in
-            // Hover keeps arriving while the layer animates out; without this
-            // the split survives the close and the next search opens already
-            // split apart.
-            guard isSearching, case let .active(location) = hover else { return }
-            let opensAt = Self.searchWidth - Self.splitZone
-            let closesAt = opensAt - Self.splitHysteresis
-            if !isSplit, location.x > opensAt {
-                Haptics.pop()
-                withAnimation(Self.splitCurve) { isSplit = true }
-            } else if isSplit, location.x < closesAt {
-                withAnimation(Self.splitCurve) { isSplit = false }
-            }
-        }
-        .onExitCommand(perform: endSearch)
-        .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
+    /// The close button, always present so it is never being scaled by a
+    /// transition at the moment you aim at it. Its width animates instead.
+    private var closeCircle: some View {
+        Image(systemName: "xmark")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Chamfer.Palette.pageText)
+            .frame(width: Self.collapsedHeight, height: Self.collapsedHeight)
+            .barSurface(radius: Self.collapsedHeight / 2)
+            .frame(width: isSplit ? Self.collapsedHeight : 0)
+            .opacity(isSplit ? 1 : 0)
+            .contentShape(Circle())
+            // A tap gesture rather than a Button: while the field holds focus,
+            // the first click on a button is spent moving first responder
+            // instead of activating it, which is why it took two.
+            .onTapGesture { endSearch() }
+            .allowsHitTesting(isSplit)
     }
 
     private var fieldWidth: CGFloat {
@@ -250,7 +257,8 @@ public struct BottomBar: View {
             TextField("Search notes", text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
-                .foregroundStyle(Chamfer.Palette.textOnPaper)
+                .foregroundStyle(Chamfer.Palette.pageText)
+                .tint(Chamfer.Palette.pageText)
                 .focused($searchFocused)
             Spacer(minLength: 0)
         }

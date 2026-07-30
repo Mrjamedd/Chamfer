@@ -12,6 +12,11 @@ struct ChamferGalleryApp: App {
     var body: some Scene {
         WindowGroup("Chamfer Gallery") {
             GalleryRootView()
+                // The theme is a fixed cream; nothing in it has a dark variant.
+                // Without this, system-drawn controls — the search field's text
+                // and caret above all — follow the system appearance and come
+                // out light on cream.
+                .preferredColorScheme(.light)
         }
         // No title bar, so the window is one continuous field of beige rather
         // than beige under a strip of system chrome.
