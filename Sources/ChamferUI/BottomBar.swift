@@ -48,6 +48,7 @@ public struct BottomBar: View {
     @State private var hovered: String?
     @State private var isSearching = false
     @State private var isSplit = false
+    @State private var closeHovered = false
     @State private var pointerInRow = false
     @State private var pointerInList = false
     @State private var closeTask: Task<Void, Never>?
@@ -130,6 +131,7 @@ public struct BottomBar: View {
                 Haptics.pop()
                 withAnimation(Self.splitCurve) { isSplit = true }
             } else if isSplit, location.x < closesAt {
+                closeHovered = false
                 withAnimation(Self.splitCurve) { isSplit = false }
             }
         }
@@ -232,10 +234,19 @@ public struct BottomBar: View {
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(Chamfer.Palette.pageText)
             .frame(width: Self.collapsedHeight, height: Self.collapsedHeight)
-            .barSurface(radius: Self.collapsedHeight / 2)
+            // Hover lightens the fill to paper, the same signal every row and
+            // destination in the app uses.
+            .barSurface(
+                radius: Self.collapsedHeight / 2,
+                fill: closeHovered ? Chamfer.Palette.paper : Chamfer.Palette.bar
+            )
             .frame(width: isSplit ? Self.collapsedHeight : 0)
             .opacity(isSplit ? 1 : 0)
             .contentShape(Circle())
+            .onHover { inside in
+                guard isSplit else { return }
+                withAnimation(Chamfer.Motion.quick) { closeHovered = inside }
+            }
             // A tap gesture rather than a Button: while the field holds focus,
             // the first click on a button is spent moving first responder
             // instead of activating it, which is why it took two.
@@ -280,6 +291,7 @@ public struct BottomBar: View {
         Haptics.commit()
         searchFocused = false
         query = ""
+        closeHovered = false
         withAnimation(Self.searchCurve) {
             isSplit = false
             isSearching = false
@@ -430,8 +442,8 @@ public struct BottomBar: View {
 private extension View {
     /// The bar's material: tan fill, hairline edge, soft float. Shared so the
     /// field and the detached close button read as pieces of the same object.
-    func barSurface(radius: CGFloat) -> some View {
-        background(Chamfer.Palette.bar)
+    func barSurface(radius: CGFloat, fill: Color = Chamfer.Palette.bar) -> some View {
+        background(fill)
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
