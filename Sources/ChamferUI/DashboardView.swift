@@ -63,7 +63,10 @@ enum DashboardTabGesture {
 enum DashboardBottomBarItems {
     private static let recentNoteLimit = 10
 
-    static func make(for state: DashboardState) -> [BottomBar.Item] {
+    static func make(
+        for state: DashboardState,
+        modelsState: ModelsLandscapeState = ModelsLandscapeState()
+    ) -> [BottomBar.Item] {
         [
             .init(
                 id: DashboardView.Tab.notes,
@@ -88,7 +91,10 @@ enum DashboardBottomBarItems {
                 id: DashboardView.Tab.models,
                 symbol: "cpu",
                 label: "Models",
-                entries: Backend.all(runState: state.runState).map {
+                entries: Backend.all(
+                    runState: state.runState,
+                    landscapeState: modelsState
+                ).map {
                     .init(id: $0.name, title: $0.shortName, detail: $0.status)
                 }
             )
@@ -130,6 +136,7 @@ public struct DashboardView: View {
     @State private var showingHome = false
     @State private var displayedNote: NoteDocument?
     @State private var isSearching = false
+    @State private var modelsState = ModelsLandscapeState()
 
     private let state: DashboardState
     private let onClose: () -> Void
@@ -150,7 +157,7 @@ public struct DashboardView: View {
     }
 
     private var items: [BottomBar.Item] {
-        DashboardBottomBarItems.make(for: state)
+        DashboardBottomBarItems.make(for: state, modelsState: modelsState)
     }
 
     private var tabSelection: Binding<String> {
@@ -254,7 +261,7 @@ public struct DashboardView: View {
             case Tab.review:
                 ReviewPage(proposals: state.pendingProposals)
             case Tab.models:
-                ModelsPage(runState: state.runState)
+                ModelsPage(runState: state.runState, state: $modelsState)
             default:
                 if let note = displayedNote {
                     NotePageView(note)
@@ -410,74 +417,6 @@ private struct ReviewPage: View {
                     }
                     .padding(.bottom, Chamfer.Space.section)
                 }
-            }
-        }
-    }
-}
-
-/// A rewrite backend and whether it can run right now. One source for both the
-/// Models page and the bar's hover list, so the two can never disagree.
-struct Backend: Identifiable {
-    let name: String
-    let shortName: String
-    let status: String
-    let tone: Pill.Tone
-    let detail: String
-
-    var id: String { name }
-
-    static func all(runState: RunState) -> [Backend] {
-        var appleUnavailableReason: String? {
-            if case let .rewritingUnavailable(reason) = runState { return reason }
-            return nil
-        }
-        return [
-            Backend(
-                name: "Apple Foundation Models",
-                shortName: "Foundation Models",
-                status: appleUnavailableReason == nil ? "Active" : "Unavailable",
-                tone: appleUnavailableReason == nil ? .positive : .danger,
-                detail: appleUnavailableReason
-                    ?? "The on-device model built into macOS. Nothing to download, nothing leaves the Mac."
-            ),
-            Backend(
-                name: "Ollama",
-                shortName: "Ollama",
-                status: "Not configured",
-                tone: .neutral,
-                detail: "Point Chamfer at a local Ollama server to use a larger model, if this Mac has the memory for it."
-            ),
-            Backend(
-                name: "Bundled MLX",
-                shortName: "Bundled MLX",
-                status: "Not installed",
-                tone: .neutral,
-                detail: "Ships a small model inside the app. Works without Apple Intelligence, at the cost of a large download."
-            )
-        ]
-    }
-}
-
-/// Which local model does the rewriting, and whether it can right now.
-private struct ModelsPage: View {
-    let runState: RunState
-
-    var body: some View {
-        PageScroll(title: "Models") {
-            ForEach(Backend.all(runState: runState)) { backend in
-                VStack(alignment: .leading, spacing: Chamfer.Space.tight) {
-                    HStack(spacing: Chamfer.Space.snug) {
-                        Text(backend.name)
-                            .font(Chamfer.TypeScale.pageHeading)
-                            .foregroundStyle(Chamfer.Palette.pageText)
-                        Pill(backend.status, tone: backend.tone)
-                    }
-                    Text(backend.detail)
-                        .font(Chamfer.TypeScale.body)
-                        .foregroundStyle(Chamfer.Palette.pageTextSoft)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.bottom, Chamfer.Space.loose)
             }
         }
     }
