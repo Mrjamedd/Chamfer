@@ -77,6 +77,11 @@ let package = Package(
             name: "ChamferRewriteTests",
             dependencies: ["ChamferRewrite"],
             path: "Tests/ChamferRewriteTests"
+        ),
+        .testTarget(
+            name: "ChamferUITests",
+            dependencies: ["ChamferCore", "ChamferFixtures", "ChamferUI"],
+            path: "Tests/ChamferUITests"
         )
     ]
 )

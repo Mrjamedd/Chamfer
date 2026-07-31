@@ -6,13 +6,14 @@ import SwiftUI
 /// Every component, every state, on one scrolling page.
 struct ComponentCatalog: View {
     @State private var barSelection = "notes"
+    @State private var barIsSearching = false
 
     private let typical = Fixtures.state(for: .typical)
     private let unreachable = Fixtures.state(for: .folderUnreachable)
     private let huge = Fixtures.state(for: .hugeNote)
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: Chamfer.Space.section) {
                 specimen("Palette") { palette }
                 specimen("Hover lift — at rest and held open") { hoverPair }
@@ -118,7 +119,9 @@ struct ComponentCatalog: View {
                 .init(id: "review", symbol: "checkmark.circle", label: "Review"),
                 .init(id: "models", symbol: "cpu", label: "Models")
             ],
-            selection: $barSelection
+            selection: $barSelection,
+            isSearching: $barIsSearching,
+            searchableNotes: typical.searchableNotes
         )
     }
 

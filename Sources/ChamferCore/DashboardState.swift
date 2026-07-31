@@ -45,6 +45,16 @@ public struct DashboardState: Sendable, Equatable {
     public var folders: [WatchedFolder]
     public var proposals: [Proposal]
     public var recentlyCleaned: [CleanupRecord]
+    /// Lightweight metadata for the notes most recently touched by the user.
+    ///
+    /// This is intentionally separate from `recentlyCleaned`: opening or
+    /// editing a note should make it recent even when Chamfer changed nothing.
+    public var recentNotes: [NoteSummary]
+    /// Full note values available to title-and-content search.
+    ///
+    /// The watcher owns populating this collection. Keeping it in dashboard
+    /// state lets the UI remain a pure renderer with no filesystem access.
+    public var searchableNotes: [NoteDocument]
     /// The note currently on the page, if one is open.
     public var openNote: NoteDocument?
 
@@ -53,12 +63,16 @@ public struct DashboardState: Sendable, Equatable {
         folders: [WatchedFolder],
         proposals: [Proposal],
         recentlyCleaned: [CleanupRecord],
+        recentNotes: [NoteSummary] = [],
+        searchableNotes: [NoteDocument] = [],
         openNote: NoteDocument? = nil
     ) {
         self.runState = runState
         self.folders = folders
         self.proposals = proposals
         self.recentlyCleaned = recentlyCleaned
+        self.recentNotes = recentNotes
+        self.searchableNotes = searchableNotes
         self.openNote = openNote
     }
 

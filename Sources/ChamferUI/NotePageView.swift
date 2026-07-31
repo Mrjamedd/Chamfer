@@ -11,7 +11,7 @@ public struct NotePageView: View {
     }
 
     public var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(Block.parse(document.text).enumerated()), id: \.offset) { _, block in
                     view(for: block)

@@ -120,20 +120,33 @@ public struct ChamferButtonStyle: ButtonStyle {
         let emphasis: Emphasis
 
         var body: some View {
+            let shape = RoundedRectangle(
+                cornerRadius: Chamfer.Radius.small,
+                style: .continuous
+            )
+
             configuration.label
                 .font(Chamfer.TypeScale.bodyStrong)
                 .foregroundStyle(foreground)
                 .padding(.horizontal, Chamfer.Space.regular)
                 .padding(.vertical, Chamfer.Space.snug - 1)
-                .background(background)
-                .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous))
+                .background {
+                    shape
+                        .fill(background)
+                        .overlay {
+                            shape
+                                .fill(Chamfer.Palette.hoverTint)
+                                .opacity(isHovered ? 1 : 0)
+                        }
+                }
+                .clipShape(shape)
                 .overlay(
-                    RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
-                        .strokeBorder(border, lineWidth: 1)
+                    shape.strokeBorder(border, lineWidth: 1)
                 )
                 .chamferHoverRing(isHovered, radius: Chamfer.Radius.small)
                 .onHover { isHovered = $0 }
                 .opacity(configuration.isPressed ? 0.72 : 1)
+                .animation(Chamfer.Motion.quick, value: isHovered)
                 .animation(Chamfer.Motion.quick, value: configuration.isPressed)
         }
 

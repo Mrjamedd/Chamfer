@@ -24,10 +24,17 @@ public extension Chamfer {
         /// object rather than as part of the background.
         public static let bar = rgb(0xE8DBC4)
         public static let barStroke = rgb(0xDCCBAE)
+        /// Interface hover feedback stays translucent so the material beneath
+        /// it still reads, but leans toward ink rather than flashing white.
+        public static let hoverTint = Color.black.opacity(0.075)
+        /// The bottom bar's selected destination is an opaque black control,
+        /// matching the reference rather than reading as tinted glass.
+        public static let selectionTint = Color.black
         /// The hover ring: the one signal that says "the pointer is on this",
         /// used by every interactive surface in the app. Deliberately barely
         /// there — it should be felt more than seen.
         public static let ring = rgb(0xE79BC0).opacity(0.38)
+        public static let barRing = rgb(0xE79BC0).opacity(0.20)
         public static let ringWidth: CGFloat = 1
 
         // The note page: the lightest surface, with black type on it.
@@ -211,9 +218,24 @@ public extension Chamfer {
     }
 
     enum Motion {
-        public static let quick = Animation.easeOut(duration: 0.14)
+        public static let quickDuration: TimeInterval = 0.10
+        public static let interactiveDuration: TimeInterval = 0.20
+        public static let navigationDuration: TimeInterval = 0.30
+
+        public static let quick = Animation.easeOut(duration: quickDuration)
         /// The rise and pink bloom when a card is hovered.
-        public static let lift = Animation.spring(response: 0.34, dampingFraction: 0.76)
+        public static let lift = Animation.spring(
+            duration: interactiveDuration,
+            bounce: 0.06
+        )
+        public static let interactive = Animation.spring(
+            duration: interactiveDuration,
+            bounce: 0.035
+        )
+        public static let navigation = Animation.spring(
+            duration: navigationDuration,
+            bounce: 0.02
+        )
     }
 }
 
@@ -237,7 +259,7 @@ public extension Chamfer {
     /// pulled out of proportion.
     enum Window {
         public static let width: CGFloat = 780
-        public static let height: CGFloat = 900
+        public static let height: CGFloat = 860
     }
 }
 

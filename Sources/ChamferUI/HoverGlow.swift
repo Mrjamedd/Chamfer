@@ -32,35 +32,36 @@ public extension View {
     /// A faint pink ring traced around a surface.
     ///
     /// The two surfaces the app is built from — the page and the bar — wear it
-    /// permanently, which is where the colour comes from. Everything
-    /// interactive inside them wears it only under the pointer. Same ring
-    /// either way, so it always means "this is a thing", never anything else.
-    func chamferRing(radius: CGFloat) -> some View {
+    /// permanently as quiet brand framing. Interactive controls use the
+    /// separate dark hover treatment below.
+    func chamferRing(
+        radius: CGFloat,
+        color: Color = Chamfer.Palette.ring
+    ) -> some View {
         overlay(
             RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(Chamfer.Palette.ring, lineWidth: Chamfer.Palette.ringWidth)
+                .strokeBorder(color, lineWidth: Chamfer.Palette.ringWidth)
                 .allowsHitTesting(false)
         )
     }
 
-    /// The same ring, shown only while the pointer is on the surface.
+    /// A soft dark shadow shown only while the pointer is on an interactive
+    /// surface. There is deliberately no border inside the shadow.
     func chamferHoverRing(_ isActive: Bool, radius: CGFloat) -> some View {
-        overlay(
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(Chamfer.Palette.ring, lineWidth: Chamfer.Palette.ringWidth)
-                .opacity(isActive ? 1 : 0)
-                .allowsHitTesting(false)
+        shadow(
+            color: .black.opacity(isActive ? 0.16 : 0),
+            radius: isActive ? 8 : 0,
+            y: isActive ? 3 : 0
         )
         .animation(Chamfer.Motion.quick, value: isActive)
     }
 
-    /// Circular surfaces get the same ring.
+    /// Circular surfaces get the same dark hover treatment.
     func chamferHoverRingCircle(_ isActive: Bool) -> some View {
-        overlay(
-            Circle()
-                .strokeBorder(Chamfer.Palette.ring, lineWidth: Chamfer.Palette.ringWidth)
-                .opacity(isActive ? 1 : 0)
-                .allowsHitTesting(false)
+        shadow(
+            color: .black.opacity(isActive ? 0.16 : 0),
+            radius: isActive ? 8 : 0,
+            y: isActive ? 3 : 0
         )
         .animation(Chamfer.Motion.quick, value: isActive)
     }

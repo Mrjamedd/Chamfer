@@ -66,7 +66,9 @@ public enum Fixtures {
                 runState: .idle,
                 folders: [vaultFolder(noteCount: 412)],
                 proposals: [],
-                recentlyCleaned: []
+                recentlyCleaned: [],
+                recentNotes: recentNotes(),
+                searchableNotes: searchableNotes()
             )
 
         case .typical:
@@ -75,6 +77,8 @@ public enum Fixtures {
                 folders: [vaultFolder(noteCount: 412), archiveFolder()],
                 proposals: typicalProposals(),
                 recentlyCleaned: recentCleanups(),
+                recentNotes: recentNotes(extraProposals: typicalProposals()),
+                searchableNotes: searchableNotes(extraProposals: typicalProposals()),
                 openNote: openNote
             )
 
@@ -83,7 +87,13 @@ public enum Fixtures {
                 runState: .idle,
                 folders: [vaultFolder(noteCount: 2_284)],
                 proposals: (0..<200).map { floodProposal(index: $0) },
-                recentlyCleaned: recentCleanups()
+                recentlyCleaned: recentCleanups(),
+                recentNotes: recentNotes(
+                    extraProposals: (0..<200).map { floodProposal(index: $0) }
+                ),
+                searchableNotes: searchableNotes(
+                    extraProposals: (0..<200).map { floodProposal(index: $0) }
+                )
             )
 
         case .hugeNote:
@@ -91,7 +101,9 @@ public enum Fixtures {
                 runState: .idle,
                 folders: [vaultFolder(noteCount: 412)],
                 proposals: [hugeProposal()],
-                recentlyCleaned: []
+                recentlyCleaned: [],
+                recentNotes: recentNotes(extraProposals: [hugeProposal()]),
+                searchableNotes: searchableNotes(extraProposals: [hugeProposal()])
             )
 
         case .codeHeavy:
@@ -99,7 +111,9 @@ public enum Fixtures {
                 runState: .idle,
                 folders: [vaultFolder(noteCount: 412)],
                 proposals: [codeHeavyProposal()],
-                recentlyCleaned: []
+                recentlyCleaned: [],
+                recentNotes: recentNotes(extraProposals: [codeHeavyProposal()]),
+                searchableNotes: searchableNotes(extraProposals: [codeHeavyProposal()])
             )
 
         case .sweeping:
@@ -107,7 +121,13 @@ public enum Fixtures {
                 runState: .sweeping(completed: 137, total: 412),
                 folders: [vaultFolder(noteCount: 412, lastSweep: nil)],
                 proposals: Array(typicalProposals().prefix(1)),
-                recentlyCleaned: Array(recentCleanups().prefix(2))
+                recentlyCleaned: Array(recentCleanups().prefix(2)),
+                recentNotes: recentNotes(
+                    extraProposals: Array(typicalProposals().prefix(1))
+                ),
+                searchableNotes: searchableNotes(
+                    extraProposals: Array(typicalProposals().prefix(1))
+                )
             )
 
         case .rewriteUnavailable:
@@ -117,7 +137,9 @@ public enum Fixtures {
                 ),
                 folders: [vaultFolder(noteCount: 412)],
                 proposals: [],
-                recentlyCleaned: recentCleanups()
+                recentlyCleaned: recentCleanups(),
+                recentNotes: recentNotes(),
+                searchableNotes: searchableNotes()
             )
 
         case .folderUnreachable:
@@ -133,7 +155,13 @@ public enum Fixtures {
                     )
                 ],
                 proposals: Array(typicalProposals().prefix(2)),
-                recentlyCleaned: []
+                recentlyCleaned: [],
+                recentNotes: recentNotes(
+                    extraProposals: Array(typicalProposals().prefix(2))
+                ),
+                searchableNotes: searchableNotes(
+                    extraProposals: Array(typicalProposals().prefix(2))
+                )
             )
 
         case .failed:
@@ -143,7 +171,13 @@ public enum Fixtures {
                 ),
                 folders: [vaultFolder(noteCount: 412)],
                 proposals: Array(typicalProposals().prefix(1)),
-                recentlyCleaned: recentCleanups()
+                recentlyCleaned: recentCleanups(),
+                recentNotes: recentNotes(
+                    extraProposals: Array(typicalProposals().prefix(1))
+                ),
+                searchableNotes: searchableNotes(
+                    extraProposals: Array(typicalProposals().prefix(1))
+                )
             )
         }
     }
@@ -155,6 +189,123 @@ public enum Fixtures {
         url: SampleNotes.url("Scheduling migration.md"),
         text: SampleNotes.migrationBody
     )
+
+    static func searchableNotes(extraProposals: [Proposal] = []) -> [NoteDocument] {
+        var documents = [
+            openNote,
+            NoteDocument(
+                url: SampleNotes.url("Standup 30 Jul.md"),
+                text: """
+                # Standup 30 Jul
+
+                The retry logic needs exponential backoff before the next rollout.
+                The dashboard owner will check the queue after lunch.
+                """
+            ),
+            NoteDocument(
+                url: SampleNotes.url("Groceries.md"),
+                text: """
+                # Groceries
+
+                Coffee, oranges, sourdough, olive oil, and oat milk.
+                """
+            ),
+            NoteDocument(
+                url: SampleNotes.url("Reading list.md"),
+                text: """
+                # Reading list
+
+                Essays about local-first software, humane tools, and durable notes.
+                """
+            ),
+            NoteDocument(
+                url: SampleNotes.url("Launch checklist.md"),
+                text: """
+                # Launch checklist
+
+                Verify backups, publish release notes, and watch error rates.
+                """
+            ),
+            NoteDocument(
+                url: SampleNotes.url("Loose ideas.md"),
+                text: """
+                # Loose ideas
+
+                A quiet inbox for fragments that have not found a permanent home.
+                """
+            ),
+            NoteDocument(
+                url: SampleNotes.url("Project compass.md"),
+                text: """
+                # Project compass
+
+                Keep the next milestone small enough to explain in one calm sentence.
+                """
+            ),
+            NoteDocument(
+                url: SampleNotes.url("Weekend sketch.md"),
+                text: """
+                # Weekend sketch
+
+                Walk early, visit the market, and leave an afternoon open for drawing.
+                """
+            ),
+            NoteDocument(
+                url: SampleNotes.url("Garden log.md"),
+                text: """
+                # Garden log
+
+                The basil wants more light and the tomatoes need another support line.
+                """
+            ),
+            NoteDocument(
+                url: SampleNotes.url("Questions worth keeping.md"),
+                text: """
+                # Questions worth keeping
+
+                Which problems become easier when the interface grows quieter?
+                """
+            ),
+            NoteDocument(
+                url: SampleNotes.url("Small wins.md"),
+                text: """
+                # Small wins
+
+                Fixed the build, cleared the desk, and called before the day got busy.
+                """
+            )
+        ]
+        var seenURLs = Set(documents.map(\.url))
+
+        for proposal in extraProposals where seenURLs.insert(proposal.note.url).inserted {
+            let body = proposal.hunks
+                .map(\.after)
+                .joined(separator: "\n\n")
+            documents.append(
+                NoteDocument(
+                    url: proposal.note.url,
+                    text: "# \(proposal.note.title)\n\n\(body)"
+                )
+            )
+        }
+        return documents
+    }
+
+    static func recentNotes(extraProposals: [Proposal] = []) -> [NoteSummary] {
+        [
+            note("Standup 30 Jul", file: "Standup 30 Jul.md", words: 340, minutesAgo: 4),
+            note(SampleNotes.longTitle, file: "Scheduling migration.md", words: 1_820, minutesAgo: 52),
+            note("Groceries", file: "Groceries.md", words: 42, minutesAgo: 66),
+            note("Reading list", file: "Reading list.md", words: 96, minutesAgo: 190),
+            note("Launch checklist", file: "Launch checklist.md", words: 265, minutesAgo: 310),
+            note("Loose ideas", file: "Loose ideas.md", words: 128, minutesAgo: 420),
+            note("Project compass", file: "Project compass.md", words: 152, minutesAgo: 510),
+            note("Weekend sketch", file: "Weekend sketch.md", words: 84, minutesAgo: 640),
+            note("Garden log", file: "Garden log.md", words: 118, minutesAgo: 800),
+            note("Questions worth keeping", file: "Questions worth keeping.md", words: 205, minutesAgo: 920),
+            note("Small wins", file: "Small wins.md", words: 73, minutesAgo: 1_100)
+        ] + extraProposals.map(\.note)
+    }
 
     static func vaultFolder(noteCount: Int, lastSweep: Date? = Fixtures.now.addingTimeInterval(-1_800)) -> WatchedFolder {
         WatchedFolder(url: SampleNotes.vault, noteCount: noteCount, lastSweep: lastSweep)
@@ -196,6 +347,11 @@ public enum Fixtures {
                 note: note("Reading list", file: "Reading list.md", words: 96, minutesAgo: 190),
                 hunks: [hunks[2]],
                 createdAt: now.addingTimeInterval(-9_000)
+            ),
+            Proposal(
+                note: note("Launch checklist", file: "Launch checklist.md", words: 265, minutesAgo: 310),
+                hunks: [hunks[1]],
+                createdAt: now.addingTimeInterval(-12_600)
             )
         ]
     }
@@ -261,6 +417,11 @@ public enum Fixtures {
                 note: note(SampleNotes.longTitle, file: "Scheduling migration.md", words: 1_820, minutesAgo: 52),
                 rules: ["heading.levels", "whitespace.blankLines", "quotes.style", "dates.format"],
                 appliedAt: now.addingTimeInterval(-3_120)
+            ),
+            CleanupRecord(
+                note: note("Loose ideas", file: "Loose ideas.md", words: 128, minutesAgo: 420),
+                rules: ["whitespace.blankLines"],
+                appliedAt: now.addingTimeInterval(-25_200)
             )
         ]
     }
