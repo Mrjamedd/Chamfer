@@ -145,6 +145,12 @@ public struct ChamferButtonStyle: ButtonStyle {
                 )
                 .chamferHoverRing(isHovered, radius: Chamfer.Radius.small)
                 .onHover { isHovered = $0 }
+                // Dimming alone reads as the button being disabled rather than
+                // being pushed. The give under the pointer is what says the
+                // press landed. Matched to the sheet's buttons, not taken to
+                // the 0.95 the guideline suggests — at this size that reads as
+                // a flinch, and the two button styles appear side by side.
+                .scaleEffect(configuration.isPressed ? 0.97 : 1)
                 .opacity(configuration.isPressed ? 0.72 : 1)
                 .animation(Chamfer.Motion.quick, value: isHovered)
                 .animation(Chamfer.Motion.quick, value: configuration.isPressed)

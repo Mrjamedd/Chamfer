@@ -9,19 +9,26 @@ public struct WatchedFolder: Sendable, Identifiable, Equatable {
     /// external disk was unplugged.
     public let isReachable: Bool
     public let lastSweep: Date?
+    /// This folder's departures from its vault's settings — the third and
+    /// most specific level of the configuration hierarchy. A folder with
+    /// nothing to say leaves this inherited and never appears in the
+    /// interface as a thing to configure.
+    public var policy: PolicyOverride
 
     public init(
         id: UUID = UUID(),
         url: URL,
         noteCount: Int,
         isReachable: Bool = true,
-        lastSweep: Date?
+        lastSweep: Date?,
+        policy: PolicyOverride = .inherited
     ) {
         self.id = id
         self.url = url
         self.noteCount = noteCount
         self.isReachable = isReachable
         self.lastSweep = lastSweep
+        self.policy = policy
     }
 }
 
@@ -57,6 +64,13 @@ public struct DashboardState: Sendable, Equatable {
     public var searchableNotes: [NoteDocument]
     /// The note currently on the page, if one is open.
     public var openNote: NoteDocument?
+    /// The connected vaults, each with its own overrides.
+    public var vaults: [Vault]
+    /// Every rewrite that reached a conclusion, newest first once sorted.
+    /// Stored in full; the interface decides how much of it to show.
+    public var history: [HistoryEntry]
+    /// The settings everything inherits from.
+    public var globalPolicy: RewritePolicy
 
     public init(
         runState: RunState,
@@ -65,7 +79,10 @@ public struct DashboardState: Sendable, Equatable {
         recentlyCleaned: [CleanupRecord],
         recentNotes: [NoteSummary] = [],
         searchableNotes: [NoteDocument] = [],
-        openNote: NoteDocument? = nil
+        openNote: NoteDocument? = nil,
+        vaults: [Vault] = [],
+        history: [HistoryEntry] = [],
+        globalPolicy: RewritePolicy = .standard
     ) {
         self.runState = runState
         self.folders = folders
@@ -74,9 +91,39 @@ public struct DashboardState: Sendable, Equatable {
         self.recentNotes = recentNotes
         self.searchableNotes = searchableNotes
         self.openNote = openNote
+        self.vaults = vaults
+        self.history = history
+        self.globalPolicy = globalPolicy
     }
 
     public var pendingProposals: [Proposal] {
         proposals.filter { $0.state == .pending }
+    }
+
+    public var vaultNames: [UUID: String] {
+        Dictionary(uniqueKeysWithValues: vaults.map { ($0.id, $0.name) })
+    }
+
+    /// The most recent modification date we know of for a note.
+    ///
+    /// Used to decide whether a pending rewrite has been overtaken by the
+    /// user's own editing. Looks at the notes the watcher has seen rather than
+    /// the disk, so the answer is a pure function of state.
+    public func currentModification(of url: URL) -> Date? {
+        recentNotes.first { $0.url == url }?.modifiedAt
+    }
+
+    /// Whether this rewrite was written against text that has since changed.
+    public func isOutdated(_ proposal: Proposal) -> Bool {
+        proposal.isOutdated(currentModification: currentModification(of: proposal.note.url))
+    }
+
+    public func timeline(limit: Int = HistoryWindow.standardLimit) -> ReviewTimeline {
+        ReviewTimelineBuilder.build(
+            proposals: proposals,
+            history: history,
+            vaultNames: vaultNames,
+            limit: limit
+        )
     }
 }

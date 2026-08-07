@@ -221,8 +221,38 @@ public extension Chamfer {
         public static let quickDuration: TimeInterval = 0.10
         public static let interactiveDuration: TimeInterval = 0.20
         public static let navigationDuration: TimeInterval = 0.30
+        public static let reducedDuration: TimeInterval = 0.12
 
-        public static let quick = Animation.easeOut(duration: quickDuration)
+        /// A spring rather than an ease, at the same 100ms. At this length the
+        /// two are all but indistinguishable standing still — the difference
+        /// shows when you interrupt one. An ease restarts from a standstill
+        /// every time it is retargeted, so flicking the pointer on and off
+        /// something makes it stutter; a spring carries its velocity across and
+        /// simply changes direction. Critically damped, so it never overshoots.
+        public static let quick = Animation.spring(
+            duration: quickDuration,
+            bounce: 0
+        )
+        /// What every `reduceMotion` branch animates with.
+        ///
+        /// Deliberately its own token rather than an alias for `quick`. The two
+        /// answer different questions — "how fast should this feel" and "how
+        /// little should this move" — and while they shared a value, retuning
+        /// the app's response silently retuned its accessibility behaviour.
+        ///
+        /// Symmetric easing, because what is left under reduced motion is a
+        /// cross-fade: a fade has no direction, so it should not be shaped like
+        /// something arriving.
+        public static let reduced = Animation.easeInOut(duration: reducedDuration)
+
+        /// Picks the reduced curve when the setting is on, the given one when
+        /// it is off. Saves every call site spelling out the same ternary.
+        public static func reduce(
+            _ animation: Animation,
+            when reduceMotion: Bool
+        ) -> Animation {
+            reduceMotion ? reduced : animation
+        }
         /// The rise and pink bloom when a card is hovered.
         public static let lift = Animation.spring(
             duration: interactiveDuration,
@@ -260,6 +290,15 @@ public extension Chamfer {
     enum Window {
         public static let width: CGFloat = 780
         public static let height: CGFloat = 860
+    }
+
+    /// Settings is its own window and deliberately a smaller one: it holds
+    /// rows of controls rather than a page of prose, so the reading measure
+    /// that governs `Window` would leave it mostly empty. Shared with the
+    /// gallery so the harness shows it at the size it actually ships at.
+    enum SettingsWindow {
+        public static let width: CGFloat = 540
+        public static let height: CGFloat = 520
     }
 }
 

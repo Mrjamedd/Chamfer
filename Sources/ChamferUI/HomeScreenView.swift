@@ -530,6 +530,13 @@ public struct HomeScreenView: View {
     private let onOpenNote: (NoteDocument) -> Void
     private let slotPlacements: [HomeNotePlacement]
 
+    /// The card leaving the wall, and its replacement dropping into the gap.
+    /// Named so the two halves of one gesture cannot drift apart, and kept out
+    /// of the shared tokens on purpose: these answer a swipe's momentum rather
+    /// than a pointer, which is what earns the arrival its bounce.
+    private static let cardLiftCurve = Animation.spring(duration: 0.18, bounce: 0.025)
+    private static let cardArriveCurve = Animation.spring(duration: 0.24, bounce: 0.08)
+
     public init(
         state: DashboardState,
         name: String = "Anthony",
@@ -573,9 +580,10 @@ public struct HomeScreenView: View {
                 .opacity(hasEntered ? 1 : 0)
                 .offset(y: !reduceMotion && !hasEntered ? 5 : 0)
                 .animation(
-                    reduceMotion
-                        ? Chamfer.Motion.quick
-                        : .easeOut(duration: 0.20).delay(0.02),
+                    Chamfer.Motion.reduce(
+                        Chamfer.Motion.interactive.delay(0.02),
+                        when: reduceMotion
+                    ),
                     value: hasEntered
                 )
 
@@ -589,9 +597,10 @@ public struct HomeScreenView: View {
                     .opacity(hasEntered ? 1 : 0)
                     .offset(y: !reduceMotion && !hasEntered ? 8 : 0)
                     .animation(
-                        reduceMotion
-                            ? Chamfer.Motion.quick
-                            : .easeOut(duration: 0.22).delay(0.04),
+                        Chamfer.Motion.reduce(
+                            Chamfer.Motion.interactive.delay(0.04),
+                            when: reduceMotion
+                        ),
                         value: hasEntered
                     )
 
@@ -647,10 +656,13 @@ public struct HomeScreenView: View {
                         )
                         .opacity(hasEntered ? 1 : 0)
                         .scaleEffect(hasEntered || reduceMotion ? 1 : 0.92)
+                        // The slowest of the three: the glow is the backdrop the
+                        // other two arrive on top of, so it settles last.
                         .animation(
-                            reduceMotion
-                                ? Chamfer.Motion.quick
-                                : .easeOut(duration: 0.26),
+                            Chamfer.Motion.reduce(
+                                Chamfer.Motion.navigation,
+                                when: reduceMotion
+                            ),
                             value: hasEntered
                         )
 
@@ -735,9 +747,7 @@ public struct HomeScreenView: View {
         replacementSlot = slot
         Haptics.pop()
         withAnimation(
-            reduceMotion
-                ? Chamfer.Motion.quick
-                : .spring(duration: 0.18, bounce: 0.025)
+            Chamfer.Motion.reduce(Self.cardLiftCurve, when: reduceMotion)
         ) {
             replacementMotion = .lifting
         }
@@ -763,9 +773,7 @@ public struct HomeScreenView: View {
             guard !Task.isCancelled, replacementSlot == slot else { return }
             Haptics.commit()
             withAnimation(
-                reduceMotion
-                    ? Chamfer.Motion.quick
-                    : .spring(duration: 0.24, bounce: 0.08)
+                Chamfer.Motion.reduce(Self.cardArriveCurve, when: reduceMotion)
             ) {
                 replacementMotion = .idle
             }
@@ -993,7 +1001,7 @@ private struct StickyNoteButton: View {
     }
 
     private var homeEntryAnimation: Animation {
-        guard !reduceMotion else { return Chamfer.Motion.quick }
+        guard !reduceMotion else { return Chamfer.Motion.reduced }
         let delay = min(Double(tapeVariant) * 0.015, 0.08)
         return Chamfer.Motion.navigation
             .delay(delay)
@@ -1020,15 +1028,11 @@ private struct StickyNoteButton: View {
         .zIndex(isOpening || replacementMotion == .lifting ? 20 : placement.depth)
         .onHover { isHovered = $0 }
         .animation(
-            reduceMotion
-                ? Chamfer.Motion.quick
-                : Chamfer.Motion.interactive,
+            Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
             value: isHovered
         )
         .animation(
-            reduceMotion
-                ? Chamfer.Motion.quick
-                : Chamfer.Motion.navigation,
+            Chamfer.Motion.reduce(Chamfer.Motion.navigation, when: reduceMotion),
             value: openingID
         )
         .animation(homeEntryAnimation, value: homeIsPresented)

@@ -1,10 +1,10 @@
 import Foundation
 
-/// A local language model that improves a passage of prose.
+/// A language-model backend that improves a passage of prose.
 ///
 /// The protocol is the seam that keeps the backend undecided. Foundation
-/// Models is the first implementation; Ollama or a bundled MLX model can be
-/// added later without anything else in the app changing.
+/// Apple Foundation Models, Ollama, and supported cloud providers all satisfy
+/// this seam, so the cleanup pipeline does not handle credentials or HTTP.
 public protocol Rewriter: Sendable {
     /// Whether this backend is usable right now, e.g. whether Apple
     /// Intelligence is enabled on this Mac.

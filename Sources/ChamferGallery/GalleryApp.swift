@@ -2,9 +2,8 @@ import AppKit
 import ChamferUI
 import SwiftUI
 
-/// Stands in for the Xcode preview canvas, which isn't available on a
-/// Command Line Tools machine. Run it, look at every component in every state
-/// at once, edit, run again.
+/// Source-built Chamfer window and component gallery for a Command Line Tools
+/// machine. The typical scenario includes the real autosaved example note.
 @main
 struct ChamferGalleryApp: App {
     @NSApplicationDelegateAdaptor(GalleryAppDelegate.self) private var delegate
@@ -24,6 +23,25 @@ struct ChamferGalleryApp: App {
         // The root view is a fixed frame, so tying the window to its content
         // size is what makes the window unresizable.
         .windowResizability(.contentSize)
+        .commands {
+            // The `Settings` scene below normally installs its own
+            // Command-comma item. This replaces it with an explicit one
+            // because a SwiftPM executable has no bundle, and the automatic
+            // item cannot be relied on to appear without one.
+            CommandGroup(replacing: .appSettings) {
+                SettingsLink {
+                    Text("Settings…")
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
+
+        // The same settings view the app ships, in its own window, so the
+        // harness answers Command-comma exactly as the real app does.
+        Settings {
+            GallerySettingsHost()
+                .preferredColorScheme(.light)
+        }
     }
 }
 
