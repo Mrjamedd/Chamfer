@@ -13,6 +13,39 @@ enum DashboardBottomBarSelectionVisibility {
     }
 }
 
+/// The arithmetic behind the gutter's cluster of three.
+///
+/// Extracted because both of its properties are claims rather than
+/// preferences — close sits at the exact centre, and no two hit areas
+/// overlap — and a claim that is only true in a view is one nobody notices
+/// going false.
+enum DashboardGutterLayout {
+    /// What the round controls read as.
+    static let controlDiameter: CGFloat = 32
+    /// How far each control's hit area extends past its own edge, so that a
+    /// 32pt circle answers to the 44pt the guideline asks for.
+    static let hitInset: CGFloat = 6
+    static let gap = Chamfer.Space.roomy
+    /// Reserved on each side of close, equal by construction.
+    static let slot: CGFloat = 72
+
+    static var clusterWidth: CGFloat {
+        slot * 2 + gap * 2 + controlDiameter
+    }
+
+    /// Close's centre, measured from the cluster's leading edge.
+    static var closeCentre: CGFloat {
+        slot + gap + controlDiameter / 2
+    }
+
+    /// Dead space between one control's hit area and the next one's. Zero is
+    /// the point at which they abut; below zero a click between two controls
+    /// is ambiguous.
+    static var hitAreaClearance: CGFloat {
+        gap - hitInset * 2
+    }
+}
+
 enum DashboardTabGesture {
     struct Transition: Equatable {
         let tab: String
@@ -152,6 +185,11 @@ public struct DashboardView: View {
     private let editing: NoteEditingConfiguration?
     private let noteLoadError: String?
     private let onClose: () -> Void
+    /// Injected rather than reached for directly so `ChamferUI` stays ignorant
+    /// of the `Settings` scene — the same arrangement `onClose` already uses.
+    /// The gallery leaves it at its default and the control does nothing there,
+    /// which is correct: the harness has no settings window to open.
+    private let onOpenSettings: () -> Void
 
     private static let topGutter: CGFloat = 52
 
@@ -160,11 +198,13 @@ public struct DashboardView: View {
         tab: String = Tab.notes,
         editing: NoteEditingConfiguration? = nil,
         noteLoadError: String? = nil,
-        onClose: @escaping () -> Void = {}
+        onClose: @escaping () -> Void = {},
+        onOpenSettings: @escaping () -> Void = {}
     ) {
         self.editing = editing
         self.noteLoadError = noteLoadError
         self.onClose = onClose
+        self.onOpenSettings = onOpenSettings
         _tab = State(initialValue: tab)
         _state = State(initialValue: state)
         _modelsState = State(initialValue: ModelsPreferences.loadState())
@@ -362,35 +402,84 @@ public struct DashboardView: View {
         return HistoryWindow.forNote(at: note.url, in: state.history)
     }
 
+    /// The gutter's three controls, as one cluster rather than three errands.
+    ///
+    /// They are one family — everything here acts *on* the page rather than in
+    /// it — so they are reached with one movement of the pointer instead of
+    /// three. Ordered by what each one's change touches, widening outward from
+    /// the middle: the app's defaults, this page, this note.
+    ///
+    /// Close keeps the exact centre it has always had. The two flanking slots
+    /// are a fixed, equal width, which is what pins it there: versions can
+    /// arrive, leave, or grow a digit without the control the hand already
+    /// knows moving even slightly.
     private var closeZone: some View {
         ZStack {
             if DashboardCloseControlVisibility.shouldShow(
                 pointerAtTop: pointerAtTop,
                 showingHome: showingHome
             ) {
-                // Close sits centred where it always has; versions ride the
-                // same reveal but stay off to the right, so reaching for the
-                // one you already know is unchanged.
-                FloatingCloseButton(onHover: { closeHovered = $0 }, action: handleClose)
-                    .transition(.opacity.combined(with: .offset(y: 6)))
+                HStack(spacing: DashboardGutterLayout.gap) {
+                    FloatingSettingsButton(action: onOpenSettings)
+                        .frame(
+                            width: DashboardGutterLayout.slot,
+                            alignment: .trailing
+                        )
 
-                let versions = versionsForOpenNote
-                if !versions.isEmpty {
-                    HStack {
-                        Spacer()
-                        FloatingVersionsButton(count: versions.count) {
-                            showingVersions = true
-                        }
-                    }
-                    .transition(.opacity.combined(with: .offset(y: 6)))
+                    FloatingCloseButton(
+                        onHover: { closeHovered = $0 },
+                        action: handleClose
+                    )
+
+                    versionsControl
+                        .frame(
+                            width: DashboardGutterLayout.slot,
+                            alignment: .leading
+                        )
                 }
+                .transition(gutterTransition)
             }
         }
         .frame(maxWidth: .infinity)
         .frame(height: Self.topGutter)
         .contentShape(Rectangle())
         .onHover { pointerAtTop = $0 }
-        .animation(Chamfer.Motion.quick, value: pointerAtTop)
+        .animation(gutterCurve, value: pointerAtTop)
+        // Versions comes and goes with the note under it, which can happen
+        // while the gutter is already open — switching tabs, or closing the
+        // note. Without its own trigger that change had no curve to animate
+        // on and the control simply blinked out.
+        .animation(gutterCurve, value: versionsForOpenNote.isEmpty)
+    }
+
+    /// Reserved whether or not there is a note, so the cluster is symmetric
+    /// and close cannot be nudged off centre by its neighbour appearing.
+    @ViewBuilder
+    private var versionsControl: some View {
+        let versions = versionsForOpenNote
+        ZStack(alignment: .leading) {
+            Color.clear
+            if !versions.isEmpty {
+                FloatingVersionsButton(count: versions.count) {
+                    showingVersions = true
+                }
+                .transition(gutterTransition)
+            }
+        }
+    }
+
+    /// The cluster arrives as one object, so it is one curve and one
+    /// transition rather than three staggered ones — a group that assembles
+    /// itself in pieces is not read as a group.
+    private var gutterCurve: Animation {
+        Chamfer.Motion.reduce(Chamfer.Motion.quick, when: reduceMotion)
+    }
+
+    private var gutterTransition: AnyTransition {
+        if reduceMotion {
+            return .opacity
+        }
+        return .opacity.combined(with: .offset(y: 6))
     }
 
     @ViewBuilder

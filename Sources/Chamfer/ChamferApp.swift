@@ -44,12 +44,17 @@ struct ChamferApp: App {
 }
 
 private struct RootWindow: View {
+    /// The only thing in the app that knows how to raise the `Settings` scene.
+    /// `ChamferUI` is handed a closure instead, which is what lets the gutter
+    /// control and the menu bar panel exist in a module that has no scenes.
+    @Environment(\.openSettings) private var openSettings
     @Bindable var model: AppModel
 
     var body: some View {
         DashboardView(
             state: model.dashboard,
-            onClose: { NSApp.keyWindow?.close() }
+            onClose: { NSApp.keyWindow?.close() },
+            onOpenSettings: { openSettings() }
         )
         .frame(width: Chamfer.Window.width, height: Chamfer.Window.height)
     }
@@ -78,10 +83,11 @@ final class ChamferAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
 
         let controller = MenuBarController(
-            model: model,
+            state: { [model] in model.dashboard },
             actions: MenuBarActions(
                 openMainWindow: { [weak self] in self?.showMainWindow() },
                 openReview: { [weak self] in self?.showMainWindow() },
+                openSettings: { [weak self] in self?.showSettings() },
                 togglePause: { [weak self] in self?.model.togglePause() },
                 quit: { NSApp.terminate(nil) }
             )
@@ -103,5 +109,18 @@ final class ChamferAppDelegate: NSObject, NSApplicationDelegate {
             window.makeKeyAndOrderFront(nil)
             return
         }
+    }
+
+    /// The AppKit route to the `Settings` scene rather than `openSettings`.
+    ///
+    /// The menu bar panel is an `NSHostingController` built here, outside the
+    /// scene tree, so the SwiftUI environment action is not populated in it —
+    /// the gutter control in the main window uses `openSettings` precisely
+    /// because that one *is* inside the tree. Activation first because the
+    /// panel is non-activating: without it the window opens behind whatever
+    /// the user was in.
+    private func showSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 }

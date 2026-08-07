@@ -104,8 +104,13 @@ struct ComponentCatalog: View {
     private var bar: some View {
         VStack(spacing: Chamfer.Space.loose) {
             // Normally only visible while the pointer is in the gutter above
-            // the page, so it is pinned open here to be inspectable.
-            FloatingCloseButton {}
+            // the page, so they are pinned open here to be inspectable. Shown
+            // side by side because they share one shape and appear together —
+            // a divergence between them is the thing worth catching here.
+            HStack(spacing: Chamfer.Space.loose) {
+                FloatingSettingsButton {}
+                FloatingCloseButton {}
+            }
             barControl
         }
         .frame(maxWidth: .infinity, alignment: .center)

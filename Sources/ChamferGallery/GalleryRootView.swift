@@ -1,3 +1,4 @@
+import AppKit
 import ChamferCore
 import ChamferFixtures
 import ChamferUI
@@ -20,6 +21,12 @@ extension Array {
 }
 
 struct GalleryRootView: View {
+    /// The harness answers Command-comma with the same `Settings` scene the app
+    /// does, so the gutter's control has somewhere real to go. Without this the
+    /// gear was drawn and did nothing here — a control that only works in one
+    /// of the two builds is exactly what the harness exists to catch.
+    @Environment(\.openSettings) private var openSettings
+
     private let selection: GallerySection
     private let dashboardState: DashboardState?
     private let editing: NoteEditingConfiguration?
@@ -92,7 +99,9 @@ struct GalleryRootView: View {
             DashboardView(
                 state: dashboardState ?? Fixtures.state(for: scenario),
                 editing: editing,
-                noteLoadError: noteLoadError
+                noteLoadError: noteLoadError,
+                onClose: { NSApp.keyWindow?.close() },
+                onOpenSettings: { openSettings() }
             )
         case .components:
             ComponentCatalog()

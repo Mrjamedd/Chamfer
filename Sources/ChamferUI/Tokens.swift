@@ -320,6 +320,10 @@ public extension Chamfer {
         public static let pageTitle = Font.system(size: 40, weight: .bold, design: .serif)
         public static let pageHeading = Font.system(size: 23, weight: .semibold, design: .serif)
         public static let pageBody = Font.system(size: 17, weight: .regular, design: .serif)
+        /// The line under a page's heading: the serif voice, but stepped down
+        /// far enough that it explains the heading rather than competing with
+        /// it. Below `pageBody` because it is not prose to be read at length.
+        public static let pageSubtitle = Font.system(size: 15, weight: .regular, design: .serif)
     }
 }
 

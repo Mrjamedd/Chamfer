@@ -1,5 +1,5 @@
 import AppKit
-import ChamferUI
+import ChamferCore
 import SwiftUI
 
 /// The menu bar surface.
@@ -8,20 +8,35 @@ import SwiftUI
 /// macOS 26 `MenuBarExtra` draws a glass sheet behind its window that cannot
 /// be removed, and Chamfer's panel is a cream card with its own shadow. Lintel
 /// hit this and had to migrate; this app starts where that ended up.
+///
+/// Lives in `ChamferUI` rather than the app target so the gallery installs the
+/// same status item from the same code. It is chrome, and all the other chrome
+/// is already here — a menu bar that only existed in one of the two builds is
+/// a surface the harness could never review.
+///
+/// State arrives as a closure rather than a value so the panel is built from
+/// whatever is current at the moment it opens. `DashboardState` is a struct, so
+/// holding one would freeze the panel at install time; the app passes its
+/// model's property and the gallery passes its fixtures, and neither has to
+/// tell this class which it is.
 @MainActor
-final class MenuBarController: NSObject, NSWindowDelegate {
+public final class MenuBarController: NSObject, NSWindowDelegate {
     private var statusItem: NSStatusItem?
     private var panel: NSPanel?
-    private let model: AppModel
+    private let state: @MainActor () -> DashboardState
     private let actions: MenuBarActions
+    private var monitor: Any?
 
-    init(model: AppModel, actions: MenuBarActions) {
-        self.model = model
+    public init(
+        state: @escaping @MainActor () -> DashboardState,
+        actions: MenuBarActions
+    ) {
+        self.state = state
         self.actions = actions
         super.init()
     }
 
-    func install() {
+    public func install() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(
             systemSymbolName: "chevron.left.slash.chevron.right",
@@ -45,7 +60,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
 
     private func present() {
         let content = MenuBarPanel(
-            state: model.dashboard,
+            state: state(),
             actions: actions,
             onDismiss: { [weak self] in self?.dismiss() }
         )
@@ -84,8 +99,6 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         }
     }
 
-    private var monitor: Any?
-
     /// Anchored under the status item, and nudged back on screen if the item
     /// is close enough to the right edge that the card would hang off it.
     private func position(_ panel: NSPanel) {
@@ -108,7 +121,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         panel.setFrameOrigin(origin)
     }
 
-    func dismiss() {
+    public func dismiss() {
         guard let panel else { return }
         Haptics.commit()
         panel.orderOut(nil)

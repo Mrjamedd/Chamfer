@@ -4,17 +4,20 @@ import SwiftUI
 public struct MenuBarActions: Sendable {
     public var openMainWindow: @MainActor () -> Void
     public var openReview: @MainActor () -> Void
+    public var openSettings: @MainActor () -> Void
     public var togglePause: @MainActor () -> Void
     public var quit: @MainActor () -> Void
 
     public init(
         openMainWindow: @escaping @MainActor () -> Void = {},
         openReview: @escaping @MainActor () -> Void = {},
+        openSettings: @escaping @MainActor () -> Void = {},
         togglePause: @escaping @MainActor () -> Void = {},
         quit: @escaping @MainActor () -> Void = {}
     ) {
         self.openMainWindow = openMainWindow
         self.openReview = openReview
+        self.openSettings = openSettings
         self.togglePause = togglePause
         self.quit = quit
     }
@@ -171,6 +174,20 @@ public struct MenuBarPanel: View {
             .buttonStyle(ChamferButtonStyle(.secondary))
 
             Spacer(minLength: 0)
+
+            // A glyph rather than a fourth word. The row is 300pt wide and
+            // already carries three labels; "Settings" spelled out would push
+            // Quit into the corner and make the footer read as a toolbar.
+            Button {
+                Haptics.pop()
+                actions.openSettings()
+                onDismiss()
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(ChamferButtonStyle(.quiet))
+            .help("Chamfer Settings")
+            .accessibilityLabel("Settings")
 
             Button("Quit") {
                 Haptics.commit()
