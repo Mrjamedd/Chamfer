@@ -1,11 +1,11 @@
 # Chamfer
 
-A macOS menu bar app that watches folders of Markdown notes and takes the rough
-edges off them.
+A local-first macOS Markdown app that takes the rough edges off notes.
 
-Chamfer is a wrapper, not a note app. It never stores your notes and has no
-editor of its own. You keep writing in Obsidian, iA Writer, Drafts or plain
-files; Chamfer watches the folder and cleans what lands there.
+The source-built app opens a real `Example.md` in a simple plain-text editor
+and autosaves after you pause typing. It writes the file to
+`~/Library/Application Support/Chamfer/Example.md` and deliberately provides no
+rich formatting, syntax highlighting, or formatting toolbar.
 
 ## Two passes, two levels of trust
 
@@ -52,3 +52,7 @@ rewrites are simply switched off.
 ## Design
 
 `docs/superpowers/specs/2026-07-30-chamfer-design.md`
+
+## Version 1.0 scope
+
+`docs/superpowers/specs/2026-08-06-chamfer-v1.0-release-scope.md`
