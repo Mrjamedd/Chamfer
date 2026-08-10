@@ -1,7 +1,7 @@
 import Foundation
 
 /// A note, described well enough to list and inspect without reading the file.
-public struct NoteSummary: Sendable, Identifiable, Equatable {
+public struct NoteSummary: Sendable, Identifiable, Equatable, Codable {
     public let id: UUID
     public let url: URL
     public let title: String
@@ -24,7 +24,7 @@ public struct NoteSummary: Sendable, Identifiable, Equatable {
 }
 
 /// One contiguous stretch of a note the model wants to change.
-public struct Hunk: Sendable, Identifiable, Equatable {
+public struct Hunk: Sendable, Identifiable, Equatable, Codable {
     public let id: UUID
     public let before: String
     public let after: String
@@ -39,7 +39,7 @@ public struct Hunk: Sendable, Identifiable, Equatable {
     }
 }
 
-public enum ProposalState: Sendable, Equatable {
+public enum ProposalState: Sendable, Equatable, Codable {
     case pending
     case accepted
     case rejected
@@ -50,17 +50,46 @@ public enum ProposalState: Sendable, Equatable {
 
     public var isPending: Bool { self == .pending }
 
+    public var isActionable: Bool {
+        switch self {
+        case .pending, .regenerating, .failed: true
+        case .accepted, .rejected: false
+        }
+    }
+
     public var failure: RewriteFailure? {
         if case let .failed(failure) = self { return failure }
         return nil
     }
 }
 
+/// Why an Automatic vault was prevented from writing a plausible model result.
+/// Malformed results are failures instead; this is reserved for readable edits
+/// whose breadth makes human judgement safer than automatic application.
+public enum RewriteReviewRecommendation: String, Sendable, Equatable, Codable {
+    case broaderThanExpectedForMode
+
+    public func explanation(for mode: RewriteMode) -> String {
+        switch self {
+        case .broaderThanExpectedForMode:
+            "Chamfer moved this rewrite from Automatic to Review because its changes were broader than expected for \(mode.title)."
+        }
+    }
+}
+
 /// A rewrite waiting for judgement. Nothing here has been written to disk.
-public struct Proposal: Sendable, Identifiable, Equatable {
+///
+/// `Codable` because the scope requires a crash to lose neither applied nor
+/// pending state: the queue is written back to disk whenever it changes, so a
+/// rewrite generated at 3am is still waiting after a reboot.
+public struct Proposal: Sendable, Identifiable, Equatable, Codable {
     public let id: UUID
     public let note: NoteSummary
     public let hunks: [Hunk]
+    /// Exact source and candidate text. Optional only for decoding queues made
+    /// by older builds; every new proposal supplies both.
+    public let baseText: String?
+    public let proposedText: String?
     public let createdAt: Date
     /// What the note's modification date was when we read it.
     ///
@@ -71,26 +100,30 @@ public struct Proposal: Sendable, Identifiable, Equatable {
     public let mode: RewriteMode
     public let modelID: String
     public let vaultID: UUID?
-    public let fallback: FallbackRecord?
     public let retryCount: Int
+    public let automaticReviewReason: RewriteReviewRecommendation?
     public var state: ProposalState
 
     public init(
         id: UUID = UUID(),
         note: NoteSummary,
         hunks: [Hunk],
+        baseText: String? = nil,
+        proposedText: String? = nil,
         createdAt: Date,
         sourceModifiedAt: Date? = nil,
         mode: RewriteMode = .fullCleanup,
-        modelID: String = "apple.foundation",
+        modelID: String = RewritePolicy.localModelIdentifier,
         vaultID: UUID? = nil,
-        fallback: FallbackRecord? = nil,
         retryCount: Int = 0,
+        automaticReviewReason: RewriteReviewRecommendation? = nil,
         state: ProposalState = .pending
     ) {
         self.id = id
         self.note = note
         self.hunks = hunks
+        self.baseText = baseText
+        self.proposedText = proposedText
         self.createdAt = createdAt
         // Defaults to the note's own modification date, which is what it was
         // at the moment the rewrite was generated.
@@ -98,8 +131,8 @@ public struct Proposal: Sendable, Identifiable, Equatable {
         self.mode = mode
         self.modelID = modelID
         self.vaultID = vaultID
-        self.fallback = fallback
         self.retryCount = retryCount
+        self.automaticReviewReason = automaticReviewReason
         self.state = state
     }
 
@@ -116,7 +149,7 @@ public struct Proposal: Sendable, Identifiable, Equatable {
 }
 
 /// A rule-pass write that already happened, kept so it can be reverted.
-public struct CleanupRecord: Sendable, Identifiable, Equatable {
+public struct CleanupRecord: Sendable, Identifiable, Equatable, Codable {
     public let id: UUID
     public let note: NoteSummary
     /// Identifiers of the rules that changed something.

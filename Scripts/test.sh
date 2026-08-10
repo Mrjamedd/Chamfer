@@ -6,6 +6,9 @@ set -eu
 FRAMEWORKS="/Library/Developer/CommandLineTools/Library/Developer/Frameworks"
 TESTING_INTEROP="/Library/Developer/CommandLineTools/Library/Developer/usr/lib"
 TESTING_PLUGINS="/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing"
+# The CLT runner can fill its event pipe before executing a large suite when
+# every Swift Testing case is scheduled at once.
+export SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH="${SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH:-1}"
 
 exec swift test \
   -Xswiftc -F -Xswiftc "$FRAMEWORKS" \

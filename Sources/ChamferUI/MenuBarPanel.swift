@@ -38,7 +38,7 @@ public struct MenuBarPanel: View {
     @Environment(\.chamferNow) private var now
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let state: DashboardState
+    private let stateProvider: @MainActor () -> DashboardState
     private let actions: MenuBarActions
     private let onDismiss: () -> Void
 
@@ -47,10 +47,24 @@ public struct MenuBarPanel: View {
         actions: MenuBarActions = MenuBarActions(),
         onDismiss: @escaping () -> Void = {}
     ) {
-        self.state = state
+        self.stateProvider = { state }
         self.actions = actions
         self.onDismiss = onDismiss
     }
+
+    public init(
+        state: @escaping @MainActor () -> DashboardState,
+        actions: MenuBarActions = MenuBarActions(),
+        onDismiss: @escaping () -> Void = {}
+    ) {
+        self.stateProvider = state
+        self.actions = actions
+        self.onDismiss = onDismiss
+    }
+
+    var presentedState: DashboardState { stateProvider() }
+
+    private var state: DashboardState { presentedState }
 
     /// Only the last handful. The panel is a glance, and anything that wants
     /// scrolling wants the window instead.
@@ -61,7 +75,7 @@ public struct MenuBarPanel: View {
     }
 
     private var pending: [Proposal] {
-        state.pendingProposals.sorted { $0.createdAt > $1.createdAt }
+        state.actionableProposals.sorted { $0.createdAt > $1.createdAt }
     }
 
     private var isPaused: Bool {
@@ -108,7 +122,7 @@ public struct MenuBarPanel: View {
                                     ? Chamfer.Palette.positive
                                     : Chamfer.Palette.danger,
                                 title: entry.note.title,
-                                detail: "\(entry.mode.title) · \(RelativeTime.string(entry.occurredAt, since: now))",
+                                detail: "\(entry.ruleIDs.isEmpty ? entry.mode.title : "Rules") · \(RelativeTime.string(entry.occurredAt, since: now))",
                                 isWarning: false
                             )
                         }

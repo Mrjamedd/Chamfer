@@ -38,14 +38,44 @@ public final class MenuBarController: NSObject, NSWindowDelegate {
 
     public func install() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(
-            systemSymbolName: "chevron.left.slash.chevron.right",
-            accessibilityDescription: "Chamfer"
-        )
-        item.button?.image?.isTemplate = true
         item.button?.target = self
         item.button?.action = #selector(toggle)
         statusItem = item
+        refreshIcon()
+    }
+
+    /// The glyph, and whether anything is waiting.
+    ///
+    /// `square.on.square.badge.checkmark` — one sheet over another with a tick —
+    /// says "a copy of this has been looked at", which is the whole app. The
+    /// previous glyph was `chevron.left.slash.chevron.right`, a source-code
+    /// symbol on a note-cleaning app.
+    ///
+    /// Filled when rewrites are waiting. A weight change rather than a red dot:
+    /// the menu bar is somebody's own space, and a badge there is a demand
+    /// where a heavier glyph is a mention.
+    public func refreshIcon() {
+        let pending = state().actionableProposals.count
+        let name = pending > 0
+            ? "square.fill.on.square.badge.checkmark"
+            : "square.on.square.badge.checkmark"
+
+        let image = NSImage(
+            systemSymbolName: name,
+            accessibilityDescription: pending > 0
+                ? "Chamfer — \(pending) waiting for review"
+                : "Chamfer"
+        ) ?? NSImage(
+            // Not every symbol exists on every macOS. A missing glyph must not
+            // mean a status item with nothing in it that cannot be clicked.
+            systemSymbolName: "checkmark.seal",
+            accessibilityDescription: "Chamfer"
+        )
+        image?.isTemplate = true
+        statusItem?.button?.image = image
+        statusItem?.button?.toolTip = pending > 0
+            ? "Chamfer — \(pending) rewrite\(pending == 1 ? "" : "s") waiting"
+            : "Chamfer"
     }
 
     /// Clicking the item again closes it, the same as clicking away. Two
@@ -59,11 +89,13 @@ public final class MenuBarController: NSObject, NSWindowDelegate {
     }
 
     private func present() {
-        let content = MenuBarPanel(
-            state: state(),
-            actions: actions,
-            onDismiss: { [weak self] in self?.dismiss() }
-        )
+        let content = LiveClock {
+            MenuBarPanel(
+                state: state,
+                actions: actions,
+                onDismiss: { [weak self] in self?.dismiss() }
+            )
+        }
         .preferredColorScheme(.light)
 
         let hosting = NSHostingController(rootView: content)
@@ -87,7 +119,12 @@ public final class MenuBarController: NSObject, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         position(panel)
+        // Starts where it will end and is animated in from a slightly small,
+        // transparent version of itself. Setting the final frame first means
+        // the anchoring maths above never has to know about the animation.
+        panel.alphaValue = 0
         panel.orderFrontRegardless()
+        animateIn(panel)
         self.panel = panel
 
         // Clicking anywhere else closes it, which is what a menu bar popover
@@ -123,12 +160,83 @@ public final class MenuBarController: NSObject, NSWindowDelegate {
 
     public func dismiss() {
         guard let panel else { return }
+        // Fired at the start of the animation rather than at its end, so the
+        // feedback answers the click instead of trailing it.
         Haptics.commit()
-        panel.orderOut(nil)
         self.panel = nil
         if let monitor {
             NSEvent.removeMonitor(monitor)
             self.monitor = nil
         }
+        animateOut(panel)
+    }
+
+    // MARK: - Motion
+
+    /// A menu bar popover appears and leaves; it does not blink. The panel used
+    /// `orderFrontRegardless` and `orderOut` directly, which meant the one
+    /// surface the user reaches for most had no transition at all.
+    ///
+    /// Snappy and unbounced, which is the macOS convention for a transient
+    /// overlay — a popover that springs past its mark reads as iOS.
+    private static let openDuration: TimeInterval = 0.30
+    private static let closeDuration: TimeInterval = 0.25
+    /// How small it starts and ends, scaled about the anchor above it so the
+    /// card reads as coming out of the status item rather than out of the air.
+    private static let collapsedScale: CGFloat = 0.94
+
+    private func animateIn(_ panel: NSPanel) {
+        guard !reduceMotionIsOn else {
+            panel.alphaValue = 1
+            return
+        }
+        let settled = panel.frame
+        panel.setFrame(Self.collapsed(settled), display: false)
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.openDuration
+            context.timingFunction = CAMediaTimingFunction(
+                name: .easeOut
+            )
+            panel.animator().alphaValue = 1
+            panel.animator().setFrame(settled, display: true)
+        }
+    }
+
+    private func animateOut(_ panel: NSPanel) {
+        guard !reduceMotionIsOn else {
+            panel.orderOut(nil)
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.closeDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+            // Leaves along the path it arrived by, back towards the status
+            // item, rather than fading on the spot.
+            panel.animator().setFrame(Self.collapsed(panel.frame), display: true)
+        } completionHandler: {
+            // The completion handler is nonisolated, and the panel is not.
+            MainActor.assumeIsolated {
+                panel.orderOut(nil)
+            }
+        }
+    }
+
+    /// The same frame, smaller, pinned by its top edge — the edge nearest the
+    /// status item it belongs to.
+    private static func collapsed(_ frame: NSRect) -> NSRect {
+        let width = frame.width * collapsedScale
+        let height = frame.height * collapsedScale
+        return NSRect(
+            x: frame.midX - width / 2,
+            y: frame.maxY - height,
+            width: width,
+            height: height
+        )
+    }
+
+    private var reduceMotionIsOn: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 }

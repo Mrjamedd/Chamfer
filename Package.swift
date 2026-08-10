@@ -75,13 +75,20 @@ let package = Package(
         ),
         .testTarget(
             name: "ChamferRewriteTests",
-            dependencies: ["ChamferRewrite"],
+            dependencies: ["ChamferCore", "ChamferRewrite"],
             path: "Tests/ChamferRewriteTests"
         ),
         .testTarget(
             name: "ChamferUITests",
-            dependencies: ["ChamferCore", "ChamferFixtures", "ChamferUI"],
+            dependencies: [
+                "ChamferCore", "ChamferFixtures", "ChamferRewrite", "ChamferUI"
+            ],
             path: "Tests/ChamferUITests"
+        ),
+        .testTarget(
+            name: "ChamferTests",
+            dependencies: ["Chamfer", "ChamferCore", "ChamferRewrite", "ChamferWatch"],
+            path: "Tests/ChamferTests"
         )
     ]
 )

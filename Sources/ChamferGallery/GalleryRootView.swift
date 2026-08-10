@@ -8,7 +8,7 @@ import SwiftUI
 enum GallerySection: Hashable {
     case scenario(Scenario)
     case components
-    /// The global defaults. In the shipping app these live in their own
+    /// The app-wide controls. In the shipping app these live in their own
     /// window behind Command-comma; here they are just another thing to look
     /// at, so the whole interface can be reviewed without switching apps.
     case settings
@@ -65,6 +65,60 @@ struct GalleryRootView: View {
             if raw == "settings" { return .settings }
             return Scenario(rawValue: raw).map(GallerySection.scenario) ?? .scenario(.typical)
         }
+
+        /// `--tab models` opens straight onto a destination, the same way
+        /// `--scenario` opens straight into a state.
+        static var tab: String {
+            guard let index = CommandLine.arguments.firstIndex(of: "--tab"),
+                  let raw = CommandLine.arguments[safe: index + 1]
+            else { return DashboardView.Tab.notes }
+            return raw
+        }
+
+        /// `--height 640` reviews a composition at the shortest window Chamfer
+        /// supports, on a machine whose screen is taller than that.
+        static var height: CGFloat? {
+            guard let index = CommandLine.arguments.firstIndex(of: "--height"),
+                  let raw = CommandLine.arguments[safe: index + 1],
+                  let value = Double(raw)
+            else { return nil }
+            return CGFloat(value)
+        }
+
+        /// `--models installed` puts a model situation on screen without a real
+        /// Ollama behind it, so every state of the Models page can be reviewed
+        /// on a machine that has none of them.
+        static var modelsState: ModelsDashboardState? {
+            guard let index = CommandLine.arguments.firstIndex(of: "--models"),
+                  let raw = CommandLine.arguments[safe: index + 1]
+            else { return nil }
+
+            var state = ModelsDashboardState(
+                localRuntimeAvailable: raw != "noRuntime",
+                device: .current()
+            )
+            switch raw {
+            case "downloading":
+                state.beginDownload()
+                state.updateDownload(fraction: 0.42, stage: "downloading")
+            case "installed":
+                state.installation = .installed
+            case "active":
+                state.installation = .installed
+                state.activate(.local)
+            case "cloud":
+                state.installation = .installed
+                state.synchronizeConnection(connected: true)
+                state.activate(.cloud)
+            case "cloudPanel":
+                state.installation = .installed
+                state.activate(.local)
+                state.openCloudConfiguration()
+            default:
+                break
+            }
+            return state
+        }
     }
 
     var body: some View {
@@ -85,10 +139,13 @@ struct GalleryRootView: View {
         case .settings:
             CGSize(
                 width: Chamfer.SettingsWindow.width,
-                height: Chamfer.SettingsWindow.height
+                height: Chamfer.SettingsWindow.previewHeight
             )
         case .scenario, .components:
-            CGSize(width: Chamfer.Window.width, height: Chamfer.Window.height)
+            CGSize(
+                width: Chamfer.Window.width,
+                height: Launch.height ?? Chamfer.Window.height
+            )
         }
     }
 
@@ -96,13 +153,17 @@ struct GalleryRootView: View {
     private var detail: some View {
         switch selection {
         case let .scenario(scenario):
-            DashboardView(
-                state: dashboardState ?? Fixtures.state(for: scenario),
+            GalleryDashboardHost(
+                initialState: dashboardState ?? Fixtures.state(for: scenario),
+                tab: Launch.tab,
+                modelsState: Launch.modelsState,
                 editing: editing,
                 noteLoadError: noteLoadError,
-                onClose: { NSApp.keyWindow?.close() },
                 onOpenSettings: { openSettings() }
             )
+            // A seeded model situation is a drawing to review, so the live
+            // probe must not arrive a moment later and replace it.
+            .environment(\.chamferModelsRuntimeProbe, Launch.modelsState == nil)
         case .components:
             ComponentCatalog()
         case .settings:
@@ -162,16 +223,59 @@ struct GalleryRootView: View {
 }
 
 
+/// Holds the dashboard state the gallery has no model to keep it in.
+///
+/// The app hands `DashboardView` a binding into `AppModel`; the harness has no
+/// model, so it keeps the fixtures here instead. Same view, same binding, same
+/// behaviour — accepting a rewrite in the gallery now actually moves it, which
+/// is the point of a harness.
+private struct GalleryDashboardHost: View {
+    @LegacyState private var state: DashboardState
+
+    private let tab: String
+    private let modelsState: ModelsDashboardState?
+    private let editing: NoteEditingConfiguration?
+    private let noteLoadError: String?
+    private let onOpenSettings: () -> Void
+
+    init(
+        initialState: DashboardState,
+        tab: String,
+        modelsState: ModelsDashboardState?,
+        editing: NoteEditingConfiguration?,
+        noteLoadError: String?,
+        onOpenSettings: @escaping () -> Void
+    ) {
+        _state = State(initialValue: initialState)
+        self.tab = tab
+        self.modelsState = modelsState
+        self.editing = editing
+        self.noteLoadError = noteLoadError
+        self.onOpenSettings = onOpenSettings
+    }
+
+    var body: some View {
+        DashboardView(
+            state: $state,
+            tab: tab,
+            modelsState: modelsState,
+            editing: editing,
+            noteLoadError: noteLoadError,
+            onClose: { NSApp.keyWindow?.close() },
+            onOpenSettings: onOpenSettings
+        )
+    }
+}
+
 /// Holds the settings state the gallery has no model to keep it in.
 ///
 /// The app owns this in `AppModel`; here it starts from the shipping defaults
 /// so what you see on launch is exactly what a new install would show.
 struct GallerySettingsHost: View {
-    @State private var policy = RewritePolicy.standard
-    @State private var preferences = AppPreferences.standard
+    @LegacyState private var preferences = AppPreferences.unconfigured
 
     var body: some View {
-        SettingsView(policy: $policy, preferences: $preferences)
+        SettingsView(preferences: $preferences)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

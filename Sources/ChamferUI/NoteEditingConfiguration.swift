@@ -3,35 +3,80 @@ import Foundation
 
 public enum NoteEditingError: LocalizedError {
     case unsupportedDocument
+    case documentChangedExternally
 
     public var errorDescription: String? {
-        "This example note is not backed by an editable file."
+        switch self {
+        case .unsupportedDocument:
+            "This note is not an editable document in an available connected vault."
+        case .documentChangedExternally:
+            "This note changed outside Chamfer. Reopen it before saving your draft."
+        }
     }
 }
 
-/// Declares exactly which real document the dashboard may edit. Documents
-/// without a backing store remain readable but can never pretend to save.
+/// Declares which real documents the dashboard may edit.
+///
+/// The backing store owns the decision. The gallery approves one example;
+/// the shipping app approves every supported note in an available connected
+/// vault. Documents without a writable backing store remain readable but can
+/// never pretend to save.
 public struct NoteEditingConfiguration {
-    public let documentURL: URL
-    private let saveAction: (NoteDocument) throws -> Void
+    private let canEditAction: @MainActor (URL) -> Bool
+    private let saveAction: @MainActor (NoteDocument, String?) throws -> Void
 
     public init(
-        documentURL: URL,
-        save: @escaping (NoteDocument) throws -> Void
+        canEdit: @escaping @MainActor (URL) -> Bool,
+        save: @escaping @MainActor (NoteDocument) throws -> Void
     ) {
-        self.documentURL = documentURL
-        saveAction = save
+        canEditAction = canEdit
+        saveAction = { document, _ in try save(document) }
     }
 
+    public init(
+        canEdit: @escaping @MainActor (URL) -> Bool,
+        saveReplacing: @escaping @MainActor (NoteDocument, String) throws -> Void
+    ) {
+        canEditAction = canEdit
+        saveAction = { document, expectedText in
+            guard let expectedText else {
+                throw NoteEditingError.documentChangedExternally
+            }
+            try saveReplacing(document, expectedText)
+        }
+    }
+
+    /// Convenience for the gallery's single file-backed example.
+    public init(
+        documentURL: URL,
+        save: @escaping @MainActor (NoteDocument) throws -> Void
+    ) {
+        let key = documentURL.standardizedFileURL
+        self.init(
+            canEdit: { $0.standardizedFileURL == key },
+            save: save
+        )
+    }
+
+    @MainActor
     public func canEdit(_ url: URL) -> Bool {
-        url.standardizedFileURL == documentURL.standardizedFileURL
+        canEditAction(url.standardizedFileURL)
     }
 
-    func save(_ document: NoteDocument) throws {
+    @MainActor
+    public func save(_ document: NoteDocument) throws {
         guard canEdit(document.url) else {
             throw NoteEditingError.unsupportedDocument
         }
-        try saveAction(document)
+        try saveAction(document, nil)
+    }
+
+    @MainActor
+    public func save(_ document: NoteDocument, replacing expectedText: String) throws {
+        guard canEdit(document.url) else {
+            throw NoteEditingError.unsupportedDocument
+        }
+        try saveAction(document, expectedText)
     }
 }
 

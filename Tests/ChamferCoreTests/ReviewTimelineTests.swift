@@ -41,7 +41,7 @@ private func entry(_ title: String, at date: Date) -> HistoryEntry {
         path: URL(filePath: "/Vault/\(title).md"),
         occurredAt: date,
         mode: .fullCleanup,
-        modelID: "apple.foundation",
+        modelID: "local.ollama",
         previousText: "before",
         appliedText: "after",
         application: .automatic

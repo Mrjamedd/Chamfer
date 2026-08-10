@@ -2,8 +2,8 @@ import ChamferCore
 import Foundation
 import SwiftUI
 
-/// Copy for the home page. The selection advances every twelve minutes and
-/// changes its vocabulary with the time of day.
+/// Copy for the home page. The vocabulary follows the time of day; which line
+/// is shown is decided by `HomeGreetingSchedule`.
 public enum HomeGreetingRotation {
     private static let general = [
         "Hello, {name}.",
@@ -62,17 +62,122 @@ public enum HomeGreetingRotation {
         }
     }
 
+    /// The user's first name, as macOS knows it.
+    ///
+    /// Hardcoding a name is fine in a harness and embarrassing in a shipped
+    /// app. Falls back to a greeting that works without one rather than to
+    /// somebody else's name.
+    public static func currentUserName() -> String {
+        let full = NSFullUserName().trimmingCharacters(in: .whitespaces)
+        guard let first = full.split(separator: " ").first, first.count > 1 else {
+            return NSUserName()
+        }
+        return String(first)
+    }
+
+    /// The line for a given rotation window.
+    ///
+    /// The day is folded into the offset so two sessions started at the same
+    /// hour on different days do not open on the same greeting.
     public static func text(
+        window: Int,
         at date: Date,
         name: String,
         calendar: Calendar = .current
     ) -> String {
         let hour = calendar.component(.hour, from: date)
-        let minute = calendar.component(.minute, from: date)
         let day = calendar.ordinality(of: .day, in: .year, for: date) ?? 0
         let greetings = availableGreetings(hour: hour, name: name)
-        let rotationWindow = day * 120 + hour * 5 + minute / 12
-        return greetings[rotationWindow % greetings.count]
+        let offset = day &* 7 &+ hour &+ window
+        return greetings[((offset % greetings.count) + greetings.count) % greetings.count]
+    }
+}
+
+/// When the greeting is allowed to change.
+///
+/// Two rules, and the second is the reason this is a type rather than a
+/// function of the clock:
+///
+/// 1. It advances once every 45 minutes **the app has been open**, not on a
+///    wall-clock boundary. A session is the unit, so the first line lasts the
+///    same 45 minutes whether the app opened at 9:00 or at 9:44.
+/// 2. It never changes while the home screen is the thing being looked at.
+///    The window can come due while you are reading it; the new line waits
+///    until you have gone somewhere else and come back. A greeting that
+///    rewrote itself under the cursor would be the one piece of copy on the
+///    page that behaves like an advertisement.
+///
+/// The consequence of (2) is deliberate: leave the home screen open all day and
+/// the greeting stays put all day. It is a welcome, and it has nobody to
+/// welcome while you are already here.
+public struct HomeGreetingSchedule: Equatable, Sendable {
+    /// Long enough that returning after a coffee is the shortest interval that
+    /// can produce a change.
+    public static let interval: TimeInterval = 45 * 60
+
+    public let openedAt: Date
+    /// The window whose line is currently on screen. Only `resolve` moves it.
+    public private(set) var shownWindow: Int
+
+    public init(openedAt: Date, shownWindow: Int = 0) {
+        self.openedAt = openedAt
+        self.shownWindow = shownWindow
+    }
+
+    /// How many 45-minute intervals of app-open time have elapsed.
+    public func window(at date: Date) -> Int {
+        let elapsed = date.timeIntervalSince(openedAt)
+        guard elapsed > 0 else { return 0 }
+        return Int(elapsed / Self.interval)
+    }
+
+    public func isDue(at date: Date) -> Bool {
+        window(at: date) != shownWindow
+    }
+
+    /// Catches the shown line up to the current window and returns it.
+    ///
+    /// Called as the home screen appears, never while it is on screen, which is
+    /// what makes rule 2 structural rather than a promise.
+    public mutating func resolve(
+        at date: Date,
+        name: String,
+        calendar: Calendar = .current
+    ) -> String {
+        shownWindow = window(at: date)
+        return HomeGreetingRotation.text(
+            window: shownWindow,
+            at: date,
+            name: name,
+            calendar: calendar
+        )
+    }
+}
+
+/// The one schedule for the running app.
+///
+/// Process-scoped because "45 minutes that the app is open" is a fact about the
+/// process, not about a view: `HomeScreenView` is created and destroyed every
+/// time you leave the home screen and come back, and a schedule living in its
+/// state would restart on every visit and never reach 45 minutes.
+@MainActor
+public final class HomeGreetingClock {
+    public static let shared = HomeGreetingClock()
+
+    private var schedule: HomeGreetingSchedule
+
+    public init(openedAt: Date = Date()) {
+        schedule = HomeGreetingSchedule(openedAt: openedAt)
+    }
+
+    /// The line to show now. Safe to call only when the home screen is about to
+    /// appear or has just appeared.
+    public func greeting(
+        at date: Date = Date(),
+        name: String,
+        calendar: Calendar = .current
+    ) -> String {
+        schedule.resolve(at: date, name: name, calendar: calendar)
     }
 }
 
@@ -516,17 +621,22 @@ private enum HomeNoteReplacementMotion: Equatable {
 
 public struct HomeScreenView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var openingID: String?
-    @State private var clockRotation = 0.0
-    @State private var clockIsHovered = false
-    @State private var hasEntered = false
-    @State private var noteDeck: HomeNoteDeck
-    @State private var replacementSlot: Int?
-    @State private var replacementMotion = HomeNoteReplacementMotion.idle
-    @State private var replacementTask: Task<Void, Never>?
+    @LegacyState private var openingID: String?
+    @LegacyState private var clockRotation = 0.0
+    @LegacyState private var clockIsHovered = false
+    @LegacyState private var hasEntered = false
+    @LegacyState private var noteDeck: HomeNoteDeck
+    @LegacyState private var replacementSlot: Int?
+    @LegacyState private var replacementMotion = HomeNoteReplacementMotion.idle
+    @LegacyState private var replacementTask: Task<Void, Never>?
+    /// The line on screen. Written on appear and never again while this view
+    /// exists, which is the whole of the "does not rotate while you are looking
+    /// at it" rule.
+    @LegacyState private var greeting: String
 
     private let state: DashboardState
     private let name: String
+    private let clock: HomeGreetingClock
     private let onOpenNote: (NoteDocument) -> Void
     private let slotPlacements: [HomeNotePlacement]
 
@@ -537,14 +647,23 @@ public struct HomeScreenView: View {
     private static let cardLiftCurve = Animation.spring(duration: 0.18, bounce: 0.025)
     private static let cardArriveCurve = Animation.spring(duration: 0.24, bounce: 0.08)
 
+    private let onConnectVault: (@MainActor () -> Void)?
+
     public init(
         state: DashboardState,
-        name: String = "Anthony",
-        onOpenNote: @escaping (NoteDocument) -> Void
+        name: String = HomeGreetingRotation.currentUserName(),
+        clock: HomeGreetingClock = .shared,
+        onOpenNote: @escaping (NoteDocument) -> Void,
+        onConnectVault: (@MainActor () -> Void)? = nil
     ) {
         self.state = state
         self.name = name
+        self.clock = clock
         self.onOpenNote = onOpenNote
+        self.onConnectVault = onConnectVault
+        // Resolved here as well as in `onAppear` so the first frame is already
+        // the right line rather than an empty one that pops in.
+        _greeting = State(initialValue: clock.greeting(name: name))
         let deck = HomeNoteDeck(cards: HomeNoteCardModel.deckCards(from: state))
         let placementsByID = Dictionary(
             uniqueKeysWithValues: HomeNoteWallLayout.placements(for: deck.visible).map {
@@ -587,13 +706,28 @@ public struct HomeScreenView: View {
                     value: hasEntered
                 )
 
-                Text("Start with the interesting part.")
+                // Resolved once, as the page appears — deliberately not read
+                // from `context.date`. This view is inside a one-second
+                // `TimelineView` for the clock above it, and taking the
+                // greeting from that tick is what used to let it change while
+                // somebody was reading it.
+                Text(greeting)
                     .font(.system(size: 46, weight: .semibold, design: .serif))
                     .foregroundStyle(Chamfer.Palette.pageText)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .minimumScaleFactor(0.78)
                     .frame(maxWidth: 620)
+                    // Only ever fires on arrival, since `greeting` cannot
+                    // change while this view is on screen. Kept so a returning
+                    // visit settles rather than snapping.
+                    .animation(
+                        Chamfer.Motion.reduce(
+                            Chamfer.Motion.navigation,
+                            when: reduceMotion
+                        ),
+                        value: greeting
+                    )
                     .opacity(hasEntered ? 1 : 0)
                     .offset(y: !reduceMotion && !hasEntered ? 8 : 0)
                     .animation(
@@ -616,6 +750,10 @@ public struct HomeScreenView: View {
             .padding(.bottom, 10)
         }
         .onAppear {
+            // The one moment the greeting may change: arriving. If a 45-minute
+            // window came due while the home screen was closed, the new line is
+            // simply the one that is here when you get back.
+            greeting = clock.greeting(name: name)
             hasEntered = false
             Task { @MainActor in
                 await Task.yield()
@@ -633,15 +771,7 @@ public struct HomeScreenView: View {
         let cards = noteDeck.visible
 
         if cards.isEmpty {
-            VStack(alignment: .leading, spacing: Chamfer.Space.snug) {
-                Text("Your notes will gather here.")
-                    .font(Chamfer.TypeScale.pageHeading)
-                    .foregroundStyle(Chamfer.Palette.pageText)
-                Text("A quiet place for the things you are thinking about.")
-                    .font(Chamfer.TypeScale.body)
-                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
-            }
-            .frame(maxWidth: .infinity, minHeight: 260, alignment: .center)
+            emptyWall
         } else {
             GeometryReader { geometry in
                 ZStack {
@@ -707,6 +837,61 @@ public struct HomeScreenView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+
+    /// The wall with nothing on it.
+    ///
+    /// The previous version was a left-aligned pair of lines inside a
+    /// centre-aligned frame, so the text sat off-axis in a 260pt void with the
+    /// glow switched off — the one screen a new user sees first, and the least
+    /// finished thing in the app.
+    ///
+    /// This keeps the composition: the glow still sits behind, and a single
+    /// card holds the slot the featured note would occupy, tape and tilt
+    /// included. An empty wall should look like a wall waiting for something,
+    /// not like a page that failed to load.
+    private var emptyWall: some View {
+        GeometryReader { geometry in
+            ZStack {
+                AmbientClusterGlow()
+                    .frame(
+                        width: geometry.size.width * 0.90,
+                        height: geometry.size.height * 0.92
+                    )
+                    .position(
+                        x: geometry.size.width * 0.52,
+                        y: geometry.size.height * 0.46
+                    )
+                    // Softer than the populated wall's. There is nothing on it
+                    // to light, so at full strength it read as a glow waiting
+                    // for something rather than as a backdrop.
+                    .opacity(hasEntered ? 0.55 : 0)
+                    .scaleEffect(hasEntered || reduceMotion ? 1 : 0.92)
+                    .animation(
+                        Chamfer.Motion.reduce(
+                            Chamfer.Motion.navigation,
+                            when: reduceMotion
+                        ),
+                        value: hasEntered
+                    )
+
+                EmptyWallCard(action: onConnectVault)
+                    .position(
+                        x: geometry.size.width * 0.52,
+                        y: geometry.size.height * 0.42
+                    )
+                    .opacity(hasEntered ? 1 : 0)
+                    .scaleEffect(hasEntered || reduceMotion ? 1 : 0.94)
+                    .animation(
+                        Chamfer.Motion.reduce(
+                            Chamfer.Motion.navigation.delay(0.04),
+                            when: reduceMotion
+                        ),
+                        value: hasEntered
+                    )
+            }
+        }
+        .frame(minHeight: 260)
     }
 
     private func handleClockHover(_ isHovered: Bool) {
@@ -922,7 +1107,7 @@ private struct GlowField: View {
 
 private struct StickyNoteButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovered = false
+    @LegacyState private var isHovered = false
 
     let card: HomeNoteCardModel
     let placement: HomeNotePlacement
@@ -1037,6 +1222,90 @@ private struct StickyNoteButton: View {
         )
         .animation(homeEntryAnimation, value: homeIsPresented)
         .accessibilityLabel("\(card.title), \(card.detail.lowercased())")
+    }
+}
+
+/// The one card on an empty wall.
+///
+/// Built from the same parts as a real note — the fill, the tape, the tilt, the
+/// serif title — so it reads as the first thing pinned up rather than as an
+/// error message wearing a card's clothes. It hangs slightly straighter than a
+/// real note, which is the only hint that it is not one.
+private struct EmptyWallCard: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @LegacyState private var isHovered = false
+
+    let action: (@MainActor () -> Void)?
+
+    var body: some View {
+        Button {
+            Haptics.pop()
+            action?()
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("A wall with nothing on it")
+                    .font(.system(size: 17, weight: .semibold, design: .serif))
+                    .foregroundStyle(Chamfer.Palette.pageText)
+                    .lineLimit(2)
+
+                Text("Point Chamfer at a folder of notes and they will gather here — the ones you are working on, and the ones it has tidied while you were elsewhere.")
+                    .font(.system(size: 11, weight: .regular, design: .serif))
+                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                    .lineSpacing(3)
+                    .lineLimit(5)
+                    .padding(.top, 8)
+
+                Spacer(minLength: 6)
+
+                Text(action == nil ? "NOTHING CONNECTED" : "CONNECT A VAULT")
+                    .font(.system(size: 8, weight: .medium))
+                    .tracking(0.6)
+                    .foregroundStyle(Chamfer.Palette.textOnPaperFaint)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.horizontal, 15)
+            .padding(.top, 20)
+            .padding(.bottom, 14)
+            .background(HomeNoteSlotPalette.fill(for: 0))
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(Chamfer.Palette.ink.opacity(0.07), lineWidth: 0.8)
+            }
+            .overlay(alignment: .top) {
+                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                    .fill(Color.white.opacity(0.56))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                            .stroke(Chamfer.Palette.ink.opacity(0.055), lineWidth: 0.6)
+                    }
+                    .frame(width: 39, height: 9)
+                    .rotationEffect(.degrees(-1.2))
+                    .offset(y: -4)
+            }
+            .shadow(
+                color: Chamfer.Palette.ink.opacity(isHovered ? 0.19 : 0.14),
+                radius: isHovered ? 12 : 9,
+                x: 1,
+                y: isHovered ? 8 : 6
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(width: 200, height: 176)
+        .disabled(action == nil)
+        // Straighter than a real note, and it straightens further under the
+        // pointer exactly as the others do.
+        .rotationEffect(.degrees(isHovered && !reduceMotion ? 0.2 : 0.6))
+        .scaleEffect(isHovered ? 1.018 : 1)
+        .offset(y: isHovered && !reduceMotion ? -5 : 0)
+        .onHover { isHovered = $0 && action != nil }
+        .animation(
+            Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
+            value: isHovered
+        )
+        .accessibilityLabel("Connect a vault")
+        .accessibilityHint("Choose a folder of Markdown or plain-text notes for Chamfer to watch")
     }
 }
 

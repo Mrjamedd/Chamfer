@@ -1,3 +1,4 @@
+import CoreServices
 import Foundation
 import Testing
 
@@ -9,6 +10,27 @@ import Testing
     let url = URL(fileURLWithPath: "/tmp/note.md")
     let moment = Date(timeIntervalSince1970: 0)
     #expect(NoteChange(url: url, detectedAt: moment) == NoteChange(url: url, detectedAt: moment))
+}
+
+@Test func renameAndDirectoryEventsRequireWholeVaultReconciliation() {
+    #expect(
+        FolderObserver.requiresReconciliation(
+            for: FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed)
+        )
+    )
+    #expect(
+        FolderObserver.requiresReconciliation(
+            for: FSEventStreamEventFlags(
+                kFSEventStreamEventFlagItemIsDir
+                    | kFSEventStreamEventFlagItemRemoved
+            )
+        )
+    )
+    #expect(
+        !FolderObserver.requiresReconciliation(
+            for: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified)
+        )
+    )
 }
 
 @Test func exampleNoteStoreCreatesARealMarkdownFileFromTheSeed() throws {

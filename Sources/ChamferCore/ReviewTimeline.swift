@@ -67,12 +67,7 @@ public enum ReviewTimelineBuilder {
         vaultNames: [UUID: String],
         limit: Int = HistoryWindow.standardLimit
     ) -> ReviewTimeline {
-        let waiting = proposals.filter {
-            switch $0.state {
-            case .pending, .regenerating, .failed: true
-            case .accepted, .rejected: false
-            }
-        }
+        let waiting = proposals.filter { $0.state.isActionable }
 
         let grouped = Dictionary(grouping: waiting) { $0.vaultID ?? Self.looseGroupID }
         let groups = grouped

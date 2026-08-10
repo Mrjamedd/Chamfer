@@ -7,7 +7,7 @@ import SwiftUI
 /// in tests and in the gallery: pass no-ops and it renders, pass real ones and
 /// it works.
 public struct ReviewActions: Sendable {
-    public var accept: @MainActor (Proposal) -> Void
+    public var accept: @MainActor (Proposal, Bool) -> Void
     public var reject: @MainActor (Proposal) -> Void
     public var regenerate: @MainActor (Proposal) -> Void
     public var openNote: @MainActor (NoteSummary) -> Void
@@ -16,7 +16,7 @@ public struct ReviewActions: Sendable {
     public var restore: @MainActor (HistoryEntry) -> Void
 
     public init(
-        accept: @escaping @MainActor (Proposal) -> Void = { _ in },
+        accept: @escaping @MainActor (Proposal, Bool) -> Void = { _, _ in },
         reject: @escaping @MainActor (Proposal) -> Void = { _ in },
         regenerate: @escaping @MainActor (Proposal) -> Void = { _ in },
         openNote: @escaping @MainActor (NoteSummary) -> Void = { _ in },
@@ -32,6 +32,21 @@ public struct ReviewActions: Sendable {
     }
 }
 
+/// What the timeline looks like, for animation purposes only.
+///
+/// Animating against `ReviewTimeline` itself would mean re-running the curve
+/// every time any proposal's metadata changed. What the page cares about is the
+/// arrangement: which rewrites are waiting, and how much is behind them.
+private struct TimelineShape: Equatable {
+    let pending: [UUID]
+    let pastCount: Int
+
+    init(_ timeline: ReviewTimeline) {
+        pending = timeline.pending.flatMap { $0.proposals.map(\.id) }
+        pastCount = timeline.past.count
+    }
+}
+
 /// Review and History as one page.
 ///
 /// Pending rewrites sit at the top grouped by vault; below a hairline, every
@@ -43,13 +58,16 @@ struct ReviewTimelinePage: View {
 
     let state: DashboardState
     var actions = ReviewActions()
+    /// Set only when there is no vault connected, which is the one case where
+    /// this page's emptiness has a cause the user can do something about.
+    var onConnectVault: (@MainActor () -> Void)?
 
-    @State private var selection = ReviewSelection()
-    @State private var showingEverything = false
+    @LegacyState private var selection = ReviewSelection()
+    @LegacyState private var showingEverything = false
     /// Set while the user is being warned that a rewrite is built on text that
     /// has since changed. Holding the proposal rather than a flag means the
     /// warning can name it.
-    @State private var confirmingOutdated: Proposal?
+    @LegacyState private var confirmingOutdated: Proposal?
 
     private var timeline: ReviewTimeline {
         state.timeline(limit: showingEverything ? .max : HistoryWindow.standardLimit)
@@ -60,10 +78,21 @@ struct ReviewTimelinePage: View {
 
         Group {
             if timeline.isEmpty {
-                PageMessage(
-                    title: "Nothing yet",
-                    detail: "Rewrites waiting on your judgement appear here, and everything Chamfer has already changed stays below them."
-                )
+                if let onConnectVault {
+                    PageMessage(
+                        title: "Nothing to review yet",
+                        detail: "Rewrites wait here for your judgement, and everything Chamfer has already changed stays below them. Connect a folder of notes and it will start watching.",
+                        actionTitle: "Connect a vault…",
+                        action: onConnectVault
+                    )
+                } else {
+                    // A connected vault with nothing waiting is not a problem
+                    // to solve — it is the app working — so it gets no button.
+                    PageMessage(
+                        title: "Nothing yet",
+                        detail: "Rewrites waiting on your judgement appear here, and everything Chamfer has already changed stays below them."
+                    )
+                }
             } else {
                 PageScroll(title: "Review", accessory: bulkBar(timeline)) {
                     VStack(alignment: .leading, spacing: Chamfer.Space.section) {
@@ -79,6 +108,19 @@ struct ReviewTimelinePage: View {
                             pastSection(timeline)
                         }
                     }
+                    // Pending and past are one list in two tenses, so a rewrite
+                    // that is accepted should be seen to move from the first
+                    // into the second rather than vanishing from one and
+                    // appearing in the other. Animating the whole stack against
+                    // the timeline's shape is what makes the two halves read as
+                    // the same list.
+                    .animation(
+                        Chamfer.Motion.reduce(
+                            Chamfer.Motion.navigation,
+                            when: reduceMotion
+                        ),
+                        value: TimelineShape(timeline)
+                    )
                 }
             }
         }
@@ -88,7 +130,7 @@ struct ReviewTimelinePage: View {
                     proposal: proposal,
                     onApply: {
                         dismissConfirmation()
-                        commit { actions.accept(proposal) }
+                        commit { actions.accept(proposal, true) }
                     },
                     onRegenerate: {
                         dismissConfirmation()
@@ -102,7 +144,7 @@ struct ReviewTimelinePage: View {
             Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
             value: confirmingOutdated?.id
         )
-        .onChange(of: state.proposals.count) {
+        .onChange(of: state.proposals) {
             // A tick left on a rewrite that has since been judged must never
             // widen the next bulk action.
             selection.prune(against: state.proposals)
@@ -128,36 +170,70 @@ struct ReviewTimelinePage: View {
                     onRetry: { commit { actions.retry(proposal) } },
                     onOpen: { actions.openNote(proposal.note) }
                 )
+                // Judged rewrites leave upward, towards the past section they
+                // are joining. A row that faded on the spot read as being
+                // deleted rather than as moving on.
+                .transition(rowTransition)
             }
         }
     }
 
+    private var rowTransition: AnyTransition {
+        if reduceMotion { return .opacity }
+        return .asymmetric(
+            insertion: .opacity.combined(with: .offset(y: 8)),
+            removal: .opacity
+                .combined(with: .offset(y: -12))
+                .combined(with: .scale(scale: 0.97, anchor: .top))
+        )
+    }
+
     /// Sits on the page title's baseline, and only while something is ticked.
     /// Bulk actions are never available by accident.
+    ///
+    /// Always returned, and empty when nothing is selected, so the accessory
+    /// slot keeps its height. While this returned nil the title reflowed every
+    /// time a tick was pressed — the one element on the page that should never
+    /// move was the one moving.
     private func bulkBar(_ timeline: ReviewTimeline) -> AnyView? {
-        guard !selection.isEmpty else { return nil }
-        let chosen = selection.resolve(in: state.proposals)
-        guard !chosen.isEmpty else { return nil }
+        let chosen = selection.isEmpty ? [] : selection.resolve(in: state.proposals)
+        let safeToAccept = chosen.filter { !state.isOutdated($0) }
 
         return AnyView(
             HStack(spacing: Chamfer.Space.snug) {
-                Text("\(chosen.count) selected")
-                    .font(Chamfer.TypeScale.caption)
-                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
-                Button("Accept") {
-                    commit { chosen.forEach(actions.accept) }
-                    selection.clear()
+                if !chosen.isEmpty {
+                    Text("\(chosen.count) selected")
+                        .font(Chamfer.TypeScale.caption)
+                        .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                    Button("Accept") {
+                        commit {
+                            safeToAccept.forEach { actions.accept($0, false) }
+                        }
+                        safeToAccept.forEach { selection.toggle($0.id) }
+                    }
+                    .buttonStyle(ChamferButtonStyle(.primary))
+                    .disabled(safeToAccept.isEmpty)
+                    Button("Reject") {
+                        commit { chosen.forEach(actions.reject) }
+                        selection.clear()
+                    }
+                    .buttonStyle(ChamferButtonStyle(.secondary))
                 }
-                .buttonStyle(ChamferButtonStyle(.primary))
-                Button("Reject") {
-                    commit { chosen.forEach(actions.reject) }
-                    selection.clear()
-                }
-                .buttonStyle(ChamferButtonStyle(.secondary))
             }
-            .transition(.opacity)
+            // Reserved whether or not anything is selected. The controls come
+            // and go inside a slot that does not.
+            .frame(height: Self.bulkBarHeight, alignment: .center)
+            .opacity(chosen.isEmpty ? 0 : 1)
+            .animation(
+                Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
+                value: chosen.count
+            )
         )
     }
+
+    /// Tall enough for the buttons inside it, so the title's baseline is fixed
+    /// whether or not they are there.
+    private static let bulkBarHeight: CGFloat = 28
 
     // MARK: The past
 
@@ -170,6 +246,8 @@ struct ReviewTimelinePage: View {
                 ForEach(timeline.past) { entry in
                     HistoryEntryRow(
                         entry: entry,
+                        isNoteAvailable: state.isHistoryNoteAvailable(entry),
+                        canRestore: state.isHistoryActionable(entry),
                         onRestore: { commit { actions.restore(entry) } },
                         onOpen: { actions.openNote(entry.note) }
                     )
@@ -202,7 +280,7 @@ struct ReviewTimelinePage: View {
     /// so it asks first. Everything else commits immediately.
     private func accept(_ proposal: Proposal) {
         guard state.isOutdated(proposal) else {
-            commit { actions.accept(proposal) }
+            commit { actions.accept(proposal, false) }
             return
         }
         Haptics.pop()
@@ -223,7 +301,7 @@ struct ReviewTimelinePage: View {
 
 // MARK: - Pending row
 
-private struct PendingRewriteRow: View {
+struct PendingRewriteRow: View {
     @Environment(\.chamferNow) private var now
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -236,8 +314,11 @@ private struct PendingRewriteRow: View {
     let onRegenerate: () -> Void
     let onRetry: () -> Void
     let onOpen: () -> Void
+    var showsSelection = true
+    var showsOpenAction = true
 
-    @State private var isHovered = false
+    @LegacyState private var isHovered = false
+    @LegacyState private var showingEveryChange = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
@@ -253,6 +334,15 @@ private struct PendingRewriteRow: View {
                 )
             }
 
+            if let reason = proposal.automaticReviewReason {
+                InlineNotice(
+                    symbol: "shield.lefthalf.filled",
+                    tint: Chamfer.Palette.brass,
+                    background: Chamfer.Palette.brassSoft,
+                    text: reason.explanation(for: proposal.mode)
+                )
+            }
+
             if let failure = proposal.state.failure {
                 InlineNotice(
                     symbol: "exclamationmark.octagon.fill",
@@ -262,28 +352,19 @@ private struct PendingRewriteRow: View {
                 )
             }
 
-            if let fallback = proposal.fallback {
+            if ProcessingGuard.isCloud(proposal.modelID) {
                 InlineNotice(
-                    symbol: fallback.leftDevice ? "cloud" : "cpu",
+                    symbol: "cloud",
                     tint: Chamfer.Palette.brass,
                     background: Chamfer.Palette.brassSoft,
-                    text: fallback.leftDevice
-                        ? "\(fallback.requestedModel) was unavailable, so \(fallback.usedModel) wrote this — and it ran in the cloud."
-                        : "\(fallback.requestedModel) was unavailable, so \(fallback.usedModel) wrote this."
+                    text: "This rewrite was produced by the cloud model, so the note left this Mac."
                 )
             }
 
             if proposal.state == .regenerating {
-                Text("Generating again from the current text…")
-                    .font(Chamfer.TypeScale.body)
-                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
-            } else if let first = proposal.hunks.first {
-                DiffHunkView(first)
-                if proposal.hunks.count > 1 {
-                    Text("+ \(proposal.hunks.count - 1) more change\(proposal.hunks.count == 2 ? "" : "s") in this note")
-                        .font(Chamfer.TypeScale.caption)
-                        .foregroundStyle(Chamfer.Palette.pageTextSoft)
-                }
+                RegeneratingPlaceholder()
+            } else {
+                changes
             }
 
             actionRow
@@ -294,14 +375,84 @@ private struct PendingRewriteRow: View {
                 isHovered = hovering
             }
         }
+        .animation(
+            Chamfer.Motion.reduce(Chamfer.Motion.navigation, when: reduceMotion),
+            value: showingEveryChange
+        )
+        // The row is a title, a line of metadata, up to four notices and a
+        // diff. Left as separate elements, VoiceOver walks all of it before
+        // reaching the buttons; combined, the whole rewrite is one thing to
+        // judge, which is what it is.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilitySummary)
+    }
+
+    private var accessibilitySummary: String {
+        var parts = [proposal.note.title, metadataText]
+        if isOutdated {
+            parts.append("Based on text that has since changed")
+        }
+        if let failure = proposal.state.failure {
+            parts.append(failure.title)
+        }
+        if let reason = proposal.automaticReviewReason {
+            parts.append(reason.explanation(for: proposal.mode))
+        }
+        parts.append(
+            proposal.changeCount == 1
+                ? "1 change"
+                : "\(proposal.changeCount) changes"
+        )
+        return parts.joined(separator: ". ")
+    }
+
+    /// Every change in the note, unfolded in place.
+    ///
+    /// The first is always shown and the rest are one click away, because
+    /// version 1.0 approves a rewrite whole: being asked to accept "and three
+    /// more changes" sight unseen is not informed consent, and sending the user
+    /// to another surface to look would break the page's one-page rule.
+    @ViewBuilder
+    private var changes: some View {
+        let visible = showingEveryChange ? proposal.hunks : Array(proposal.hunks.prefix(1))
+
+        VStack(alignment: .leading, spacing: Chamfer.Space.snug) {
+            ForEach(visible) { hunk in
+                DiffHunkView(hunk)
+            }
+
+            if proposal.hunks.count > 1 {
+                Button {
+                    Haptics.pop()
+                    withAnimation(
+                        Chamfer.Motion.reduce(Chamfer.Motion.navigation, when: reduceMotion)
+                    ) {
+                        showingEveryChange.toggle()
+                    }
+                } label: {
+                    HStack(spacing: Chamfer.Space.tight) {
+                        Image(systemName: showingEveryChange ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(
+                            showingEveryChange
+                                ? "Show less"
+                                : "Show \(proposal.hunks.count - 1) more change\(proposal.hunks.count == 2 ? "" : "s")"
+                        )
+                    }
+                }
+                .buttonStyle(ChamferButtonStyle(.quiet))
+            }
+        }
     }
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: Chamfer.Space.regular) {
-            SelectionTick(isSelected: isSelected, action: onToggleSelection)
-                // The tick is for bulk work, so it stays out of sight until
-                // the pointer is on the row or something is already ticked.
-                .opacity(isSelected || isHovered ? 1 : 0)
+            if showsSelection {
+                SelectionTick(isSelected: isSelected, action: onToggleSelection)
+                    // The tick is for bulk work, so it stays out of sight until
+                    // the pointer is on the row or something is already ticked.
+                    .opacity(isSelected || isHovered ? 1 : 0)
+            }
 
             Text(proposal.note.title)
                 .font(Chamfer.TypeScale.pageHeading)
@@ -313,6 +464,9 @@ private struct PendingRewriteRow: View {
 
             if isOutdated {
                 Pill("Outdated", symbol: "clock.badge.exclamationmark", tone: .accent)
+            }
+            if proposal.automaticReviewReason != nil {
+                Pill("Held for review", symbol: "shield.lefthalf.filled", tone: .accent)
             }
             if proposal.state.failure != nil {
                 Pill("Failed", symbol: "exclamationmark.octagon", tone: .danger)
@@ -365,8 +519,10 @@ private struct PendingRewriteRow: View {
                     .buttonStyle(ChamferButtonStyle(.quiet))
             }
             Spacer(minLength: 0)
-            Button("Open note", action: onOpen)
-                .buttonStyle(ChamferButtonStyle(.quiet))
+            if showsOpenAction {
+                Button("Open note", action: onOpen)
+                    .buttonStyle(ChamferButtonStyle(.quiet))
+            }
         }
     }
 }
@@ -378,10 +534,12 @@ private struct HistoryEntryRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let entry: HistoryEntry
+    let isNoteAvailable: Bool
+    let canRestore: Bool
     let onRestore: () -> Void
     let onOpen: () -> Void
 
-    @State private var isHovered = false
+    @LegacyState private var isHovered = false
 
     var body: some View {
         HStack(alignment: .top, spacing: Chamfer.Space.regular) {
@@ -414,12 +572,14 @@ private struct HistoryEntryRow: View {
             // Undo is the one control that matters here, and it appears on the
             // row the pointer is on rather than on all two hundred at once.
             HStack(spacing: Chamfer.Space.tight) {
-                if entry.canRestore {
+                if canRestore {
                     Button("Undo", action: onRestore)
                         .buttonStyle(ChamferButtonStyle(.quiet))
                 }
-                Button("Open", action: onOpen)
-                    .buttonStyle(ChamferButtonStyle(.quiet))
+                if isNoteAvailable {
+                    Button("Open", action: onOpen)
+                        .buttonStyle(ChamferButtonStyle(.quiet))
+                }
             }
             .opacity(isHovered ? 1 : 0)
 
@@ -434,10 +594,17 @@ private struct HistoryEntryRow: View {
                 isHovered = hovering
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            "\(entry.note.title). \(detail). \(RelativeTime.string(entry.occurredAt, since: now))"
+        )
     }
 
     private var symbol: String {
-        switch entry.outcome {
+        if !entry.ruleIDs.isEmpty, case .applied = entry.outcome {
+            return "wrench.and.screwdriver"
+        }
+        return switch entry.outcome {
         case .applied: entry.application == .automatic ? "wand.and.stars" : "checkmark"
         case .failed: "exclamationmark.octagon.fill"
         case .reverted: "arrow.uturn.backward"
@@ -467,7 +634,7 @@ private struct HistoryEntryRow: View {
 /// Not a system alert: the scope requires the user be told exactly what they
 /// are about to lose and offered the regenerate instead, and an alert with two
 /// buttons cannot make the third option as easy as the destructive one.
-private struct OutdatedConfirmation: View {
+struct OutdatedConfirmation: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let proposal: Proposal
@@ -563,8 +730,67 @@ private struct SelectionTick: View {
     }
 }
 
+/// What sits where the diff was while a rewrite is being generated again.
+///
+/// A band of the diff's own shape rather than a line of grey text, with a slow
+/// sheen crossing it. The point is that the row keeps its height: replacing a
+/// three-line diff with one sentence made the whole page jump every time
+/// somebody pressed Regenerate.
+private struct RegeneratingPlaceholder: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @LegacyState private var phase: CGFloat = -1
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Chamfer.Space.snug) {
+            Text("Generating again from the current text…")
+                .font(Chamfer.TypeScale.body)
+                .foregroundStyle(Chamfer.Palette.pageTextSoft)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
+                    .fill(Chamfer.Palette.paperSunken)
+                if !reduceMotion {
+                    sheen
+                }
+            }
+            .frame(height: 52)
+            .clipShape(
+                RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
+            )
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Generating a new rewrite from the current text")
+        .onAppear {
+            guard !reduceMotion else { return }
+            // Slow, and never bouncing. This is something to notice out of the
+            // corner of the eye while reading the rest of the page, not
+            // something asking to be watched.
+            withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) {
+                phase = 2
+            }
+        }
+    }
+
+    private var sheen: some View {
+        GeometryReader { geometry in
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0),
+                    .init(color: Chamfer.Palette.paper.opacity(0.85), location: 0.5),
+                    .init(color: .clear, location: 1)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: geometry.size.width * 0.55)
+            .offset(x: phase * geometry.size.width)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 /// A tinted line of explanation inside a row — the outdated warning, a
-/// failure, a fallback disclosure.
+/// failure, a note that this one left the device.
 private struct InlineNotice: View {
     let symbol: String
     let tint: Color

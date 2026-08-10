@@ -1,163 +1,551 @@
+import ChamferCore
+import ChamferRewrite
 import CoreGraphics
-import ChamferFixtures
+import Foundation
 import Testing
+
 @testable import ChamferUI
 
-@Test func onlyTheActiveBackendTitleIsEmphasized() {
-    for active in ModelsBackendID.allCases {
-        for backend in ModelsBackendID.allCases {
-            let presentation = ModelsTitleResponse.presentation(
-                for: backend,
-                active: active
-            )
-
-            #expect(presentation.isBold == (backend == active))
-            #expect(presentation.size == 27)
+private func device(
+    memoryGB: Int,
+    appleSilicon: Bool = true,
+    diskGB: Int? = 400
+) -> DeviceProfile {
+    DeviceProfile(
+        physicalMemoryBytes: UInt64(memoryGB) * DeviceProfile.bytesPerGigabyte,
+        performanceCoreCount: 8,
+        totalCoreCount: 10,
+        isAppleSilicon: appleSilicon,
+        availableDiskBytes: diskGB.map {
+            UInt64($0) * DeviceProfile.bytesPerGigabyte
         }
-    }
-}
-
-@Test func localCatalogChoosesOneRecommendedModelForAvailableMemory() throws {
-    let catalog = LocalModelCatalog.standard
-    let memory = UInt64(16) * 1_073_741_824
-    let assessments = catalog.map {
-        LocalModelCatalog.assessment(for: $0, physicalMemory: memory)
-    }
-
-    #expect(assessments.filter { $0.fit == .recommended }.count == 1)
-    let recommended = try #require(
-        zip(catalog, assessments).first { $0.1.fit == .recommended }
     )
-    #expect(recommended.0.id == "qwen3.5:9b")
 }
 
-@Test func localCatalogDistinguishesUsableAndUnusableModels() throws {
-    let catalog = LocalModelCatalog.standard
-    let memory = UInt64(8) * 1_073_741_824
-    let small = try #require(catalog.first { $0.id == "qwen3.5:2b" })
-    let large = try #require(catalog.first { $0.id == "gpt-oss:20b" })
+private func state(
+    memoryGB: Int = 24,
+    diskGB: Int? = 400,
+    runtimeAvailable: Bool = true
+) -> ModelsDashboardState {
+    ModelsDashboardState(
+        localRuntimeAvailable: runtimeAvailable,
+        device: device(memoryGB: memoryGB, diskGB: diskGB)
+    )
+}
 
+// MARK: - There are two paths, and no way to pick a model
+
+@Test func theProductHasExactlyTwoIntelligencePathsAndAppleIsNotOneOfThem() {
+    #expect(ModelsBackendID.allCases == [.local, .cloud])
+    #expect(ModelsBackendID(rawValue: "apple") == nil)
+    #expect(ModelsBackendID(rawValue: "mlx") == nil)
+}
+
+/// The dashboard never stores a chosen model. It stores the machine, and the
+/// model falls out of it — which is what makes "locked to the recommendation"
+/// structural rather than a rule someone has to remember to enforce.
+@Test func theModelIsDerivedFromTheMacRatherThanStored() {
+    #expect(state(memoryGB: 8).recommendedModel.id == "qwen3.5:2b")
+    #expect(state(memoryGB: 16).recommendedModel.id == "qwen3.5:4b")
+    #expect(state(memoryGB: 64).recommendedModel.id == "gpt-oss:20b")
+
+    let small = state(memoryGB: 8)
     #expect(
-        LocalModelCatalog.assessment(for: small, physicalMemory: memory).fit
-            == .recommended
-    )
-    #expect(
-        LocalModelCatalog.assessment(for: large, physicalMemory: memory).fit
-            == .unusable
+        small.recommendedModel
+            == LocalModelSelection.recommended(for: small.device)
     )
 }
 
-@Test func selectingALocalModelTracksWhetherThatExactModelIsInstalled() {
-    var state = ModelsLandscapeState(
-        selectedLocalModelID: "qwen3.5:4b",
-        installedLocalModelIDs: ["qwen3.5:2b"]
-    )
+@Test func theRecommendationExplainsItselfInTheMachinesOwnNumbers() {
+    let mac = state(memoryGB: 24)
 
-    #expect(state.installation == .notInstalled)
-    state.selectLocalModel("qwen3.5:2b")
-    #expect(state.installation == .installed)
-
-    state.selectLocalModel("qwen3.5:9b")
-    #expect(state.installation == .notInstalled)
+    #expect(mac.device.summary.contains("24 GB"))
+    #expect(mac.recommendationRationale.contains("24 GB"))
+    #expect(!mac.recommendationRationale.isEmpty)
 }
 
-@Test func selectingAModelOpensOnlyItsConfigurationWithoutChangingTheActiveModel() {
-    var state = ModelsLandscapeState()
+// MARK: - Presence reflects the disk, not the interface
 
-    state.select(.mlx)
+@Test func installationStateFollowsWhatTheRuntimeReportsIsOnDisk() {
+    var dashboard = state(memoryGB: 24)
+    #expect(dashboard.installation == .notInstalled)
 
-    #expect(state.active == .apple)
-    #expect(state.selected == .mlx)
-    #expect(state.expanded == .mlx)
+    dashboard.synchronizeInstalledLocalModels(["qwen3.5:9b"])
+    #expect(dashboard.installation == .installed)
+
+    // Deleted outside Chamfer. The page has to notice.
+    dashboard.synchronizeInstalledLocalModels([])
+    #expect(dashboard.installation == .notInstalled)
 }
 
-@Test func closingConfigurationReturnsFocusToTheActiveModel() {
-    var state = ModelsLandscapeState()
-    state.select(.mlx)
+/// Another model being present is not this model being present. This is the
+/// check that stops a Mac that once ran a different tier reporting as ready.
+@Test func anUnrelatedInstalledModelDoesNotCountAsThisMacsModel() {
+    var dashboard = state(memoryGB: 24)
 
-    state.closeConfiguration()
+    dashboard.synchronizeInstalledLocalModels(["qwen3.5:2b", "llama3:8b"])
 
-    #expect(state.active == .apple)
-    #expect(state.selected == .apple)
-    #expect(state.expanded == nil)
+    #expect(dashboard.installation == .notInstalled)
 }
 
-@Test func activatingTheSelectedModelUpdatesStatusAndCollapsesTheSheet() {
-    var state = ModelsLandscapeState()
-    state.select(.mlx)
-    state.finishDownload()
+@Test func presenceIsIndifferentToHowTheTagIsWritten() {
+    var dashboard = ModelsDashboardState(device: device(memoryGB: 4))
+    #expect(dashboard.recommendedModel.id == "qwen3.5:0.8b")
 
-    state.activateSelected()
+    dashboard.synchronizeInstalledLocalModels(["qwen3.5:0.8b"])
+    #expect(dashboard.installation == .installed)
+}
 
-    #expect(state.active == .mlx)
-    #expect(state.selected == .mlx)
-    #expect(state.expanded == nil)
-    #expect(state.status(for: .mlx, appleAvailable: true) == "ACTIVE")
-    #expect(state.status(for: .apple, appleAvailable: true) == "AVAILABLE")
+/// A poll landing mid-download must not flick the button back to "Download".
+@Test func aPollDuringADownloadDoesNotUndoIt() {
+    var dashboard = state(memoryGB: 24)
+    dashboard.beginDownload()
+
+    dashboard.synchronizeInstalledLocalModels([])
+
+    #expect(dashboard.installation == .downloading)
+}
+
+@Test func aDownloadReportsItsProgressAndClearsWhenItLands() {
+    var dashboard = state(memoryGB: 24)
+
+    dashboard.beginDownload()
+    #expect(dashboard.installation == .downloading)
+    #expect(dashboard.download?.fraction == nil)
+
+    dashboard.updateDownload(fraction: 0.4, stage: "downloading")
+    #expect(dashboard.download?.fraction == 0.4)
+
+    dashboard.finishDownload(installed: true)
+    #expect(dashboard.installation == .installed)
+    #expect(dashboard.download == nil)
+}
+
+@Test func aDownloadThatFailedLeavesTheModelUninstalled() {
+    var dashboard = state(memoryGB: 24)
+    dashboard.beginDownload()
+
+    dashboard.finishDownload(installed: false)
+
+    #expect(dashboard.installation == .notInstalled)
+    #expect(dashboard.download == nil)
+}
+
+// MARK: - Activation
+
+@Test func aFreshInstallActivatesNothingByItself() {
+    let dashboard = state()
+
+    #expect(dashboard.active == nil)
+    #expect(dashboard.status(for: .local) == "NOT INSTALLED")
+    #expect(dashboard.status(for: .cloud) == "NOT CONNECTED")
+}
+
+@Test func theLocalPathBecomesActiveOnlyWhenItIsExplicitlyActivated() {
+    var dashboard = state()
+    dashboard.synchronizeInstalledLocalModels(["qwen3.5:9b"])
+
+    #expect(dashboard.status(for: .local) == "READY")
+    #expect(dashboard.active == nil)
+
+    dashboard.activate(.local)
+
+    #expect(dashboard.active == .local)
+    #expect(dashboard.status(for: .local) == "ACTIVE")
+}
+
+/// An active path that stopped working says so rather than continuing to claim
+/// it is running.
+@Test func anActivePathWhoseRuntimeDiedReportsAsUnavailable() {
+    var dashboard = state()
+    dashboard.synchronizeInstalledLocalModels(["qwen3.5:9b"])
+    dashboard.activate(.local)
+
+    dashboard.localRuntimeAvailable = false
+
+    #expect(dashboard.status(for: .local) == "UNAVAILABLE")
+    #expect(!dashboard.localReady)
+}
+
+@Test func cloudActivationClosesItsOwnConfiguration() {
+    var dashboard = state()
+    dashboard.openCloudConfiguration()
+    dashboard.synchronizeConnection(connected: true)
+
+    dashboard.activate(.cloud)
+
+    #expect(dashboard.active == .cloud)
+    #expect(!dashboard.cloudConfigurationOpen)
+    #expect(dashboard.status(for: .cloud) == "ACTIVE")
 }
 
 @Test func connectionTestingMovesFromTestingToTheReportedResult() {
-    var state = ModelsLandscapeState()
+    var dashboard = state()
 
-    state.beginConnectionTest()
-    #expect(state.connection == .testing)
+    dashboard.beginConnectionTest()
+    #expect(dashboard.connection == .testing)
 
-    state.finishConnectionTest(connected: true)
-    #expect(state.connection == .connected)
+    dashboard.finishConnectionTest(connected: true)
+    #expect(dashboard.connection == .connected)
+
+    dashboard.finishConnectionTest(connected: false)
+    #expect(dashboard.connection == .failed)
 }
 
-@Test func bundledModelBecomesReadyOnlyAfterItsDownloadFinishes() {
-    var state = ModelsLandscapeState()
-
-    #expect(state.status(for: .mlx, appleAvailable: true) == "NOT INSTALLED")
-    state.beginDownload()
-    #expect(state.installation == .downloading)
-    state.finishDownload()
-
-    #expect(state.installation == .installed)
-    #expect(state.status(for: .mlx, appleAvailable: true) == "READY")
-}
-
-@Test func modelsPageUsesProductFacingNamesAndPurposefulActions() throws {
-    let backends = Backend.all(
-        runState: Fixtures.state(for: .typical).runState,
-        landscapeState: ModelsLandscapeState()
+/// Chamfer installs the runtime itself, so the card must not spend that time
+/// telling somebody to go and get a thing that is already arriving.
+@Test func whileChamferIsFetchingOllamaTheCardSaysSoRatherThanAskingForIt() {
+    var dashboard = state(runtimeAvailable: false)
+    dashboard.runtimeInstall = ModelsDownloadState(
+        fraction: 0.3,
+        stage: "Downloading Ollama…"
     )
-    let apple = try #require(backends.first { $0.id == .apple })
-    let local = try #require(backends.first { $0.id == .mlx })
-    let cloud = try #require(backends.first { $0.id == .ollama })
 
-    #expect(apple.name == "Apple Foundation Models")
-    #expect(apple.status == "ACTIVE")
-    #expect(apple.detail == "Private, fast and built into macOS.")
-    #expect(apple.actionTitle == "Manage settings")
-    #expect(apple.actionSymbol == "arrow.right")
-
-    #expect(local.name == "Local Model")
-    #expect(local.status == "NOT INSTALLED")
-    #expect(local.detail == "Download a private model that runs entirely on your Mac.")
-    #expect(local.actionTitle == "Download model")
-    #expect(local.actionSymbol == "arrow.down")
-
-    #expect(cloud.name == "Cloud Model")
-    #expect(cloud.status == "NOT CONNECTED")
-    #expect(cloud.detail == "Connect a supported cloud provider for access to larger models.")
-    #expect(cloud.actionTitle == "Connect provider")
-    #expect(cloud.actionSymbol == "arrow.up.right")
+    #expect(dashboard.status(for: .local) == "SETTING UP")
+    #expect(ModelsLocalPresentation.action(for: dashboard) == .preparingRuntime)
+    #expect(!ModelsLocalPresentation.isActionEnabled(for: dashboard))
+    #expect(
+        ModelsLocalPresentation.statusDetail(for: dashboard) == "Downloading Ollama…"
+    )
 }
 
-@Test func hoveringAlwaysAddsBloomExpansionAndIntensityIncludingApple() {
+/// Once the runtime lands, the card goes back to being about the model.
+@Test func theRuntimeInstallStopsSpeakingForTheCardOnceOllamaIsThere() {
+    var dashboard = state(runtimeAvailable: true)
+    dashboard.runtimeInstall = ModelsDownloadState(stage: "Starting Ollama…")
+
+    #expect(dashboard.status(for: .local) == "NOT INSTALLED")
+    #expect(ModelsLocalPresentation.action(for: dashboard) == .download)
+    #expect(ModelsLocalPresentation.isActionEnabled(for: dashboard))
+}
+
+@Test func ollamaMissingIsSaidPlainlyRatherThanAsNotInstalled() {
+    let dashboard = state(runtimeAvailable: false)
+
+    #expect(dashboard.status(for: .local) == "OLLAMA REQUIRED")
+    #expect(ModelsLocalPresentation.action(for: dashboard) == .installRuntime)
+    #expect(
+        ModelsLocalPresentation.statusDetail(for: dashboard).contains("Ollama")
+    )
+}
+
+// MARK: - The one action on the primary card
+
+@Test func thePrimaryActionFollowsTheStateRatherThanBeingAssembledAtTheCallSite() {
+    var dashboard = state()
+    #expect(ModelsLocalPresentation.action(for: dashboard) == .download)
+
+    dashboard.beginDownload()
+    #expect(ModelsLocalPresentation.action(for: dashboard) == .downloading)
+    #expect(!ModelsLocalPresentation.isActionEnabled(for: dashboard))
+
+    dashboard.finishDownload(installed: true)
+    #expect(ModelsLocalPresentation.action(for: dashboard) == .activate)
+    #expect(ModelsLocalPresentation.isActionEnabled(for: dashboard))
+
+    dashboard.activate(.local)
+    #expect(ModelsLocalPresentation.action(for: dashboard) == .alreadyActive)
+    #expect(!ModelsLocalPresentation.isActionEnabled(for: dashboard))
+}
+
+@Test func aFullDiskDisablesTheDownloadAndSaysWhy() {
+    let dashboard = state(memoryGB: 24, diskGB: 2)
+
+    #expect(!dashboard.hasRoomForModel)
+    #expect(!ModelsLocalPresentation.isActionEnabled(for: dashboard))
+    #expect(
+        ModelsLocalPresentation.statusDetail(for: dashboard)
+            .contains("Not enough free space")
+    )
+}
+
+// MARK: - Configuration modes
+
+@Test func theConfigurationModeIsPartOfTheDashboardAndDefaultsToBalanced() {
+    var dashboard = state()
+    #expect(dashboard.effort == .balanced)
+
+    dashboard.setEffort(.max)
+    #expect(dashboard.effort == .max)
+    #expect(dashboard.effort.profile.reviewPasses == 2)
+}
+
+@Test func theSelectorKeepsUnselectedModesLegible() {
+    for candidate in ModelEffort.allCases {
+        let selected = ModelsEffortSelectorResponse.presentation(
+            for: candidate,
+            selected: candidate,
+            hovered: nil
+        )
+        #expect(selected.isSelected)
+        #expect(selected.titleOpacity == 1)
+
+        let unselected = ModelsEffortSelectorResponse.presentation(
+            for: candidate,
+            selected: candidate == .base ? .max : .base,
+            hovered: nil
+        )
+        #expect(!unselected.isSelected)
+        // Legible, not ghosted: this is a choice between three things.
+        #expect(unselected.titleOpacity > 0.6)
+    }
+}
+
+@Test func hoveringAModeBringsItForwardWithoutSelectingIt() {
+    let resting = ModelsEffortSelectorResponse.presentation(
+        for: .max,
+        selected: .base,
+        hovered: nil
+    )
+    let hovered = ModelsEffortSelectorResponse.presentation(
+        for: .max,
+        selected: .base,
+        hovered: .max
+    )
+
+    #expect(hovered.titleOpacity > resting.titleOpacity)
+    #expect(!hovered.isSelected)
+}
+
+// MARK: - Persistence
+
+@Test func emptyPreferencesActivateNothing() throws {
+    let suite = "ChamferUITests.Models.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    let loaded = ModelsPreferences.loadState(
+        defaults: defaults,
+        device: device(memoryGB: 24)
+    )
+
+    #expect(loaded.active == nil)
+    #expect(loaded.effort == .balanced)
+    #expect(ModelsPreferences.loadCloudProvider(defaults: defaults) == nil)
+    #expect(ModelsSelection.activeModelID(defaults: defaults) == nil)
+}
+
+@Test func anActivatedPathAndItsModeSurviveARoundTrip() throws {
+    let suite = "ChamferUITests.Models.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    var dashboard = state()
+    dashboard.activate(.local)
+    dashboard.setEffort(.max)
+    ModelsPreferences.save(state: dashboard, defaults: defaults)
+
+    let reloaded = ModelsPreferences.loadState(
+        defaults: defaults,
+        device: device(memoryGB: 24)
+    )
+    #expect(reloaded.active == .local)
+    #expect(reloaded.effort == .max)
+    #expect(
+        ModelsSelection.activeModelID(defaults: defaults)
+            == RewritePolicy.localModelIdentifier
+    )
+    #expect(ModelsSelection.effort(defaults: defaults) == .max)
+
+    dashboard.activate(.cloud)
+    ModelsPreferences.save(state: dashboard, defaults: defaults)
+    ModelsPreferences.saveCloudProvider(.anthropic, defaults: defaults)
+    #expect(ModelsSelection.activeModelID(defaults: defaults) == "cloud.anthropic")
+}
+
+/// The mode has to reach the pipeline the moment it is changed, not on the next
+/// launch, so it is written on its own rather than only with the whole state.
+@Test func changingTheModeIsWrittenImmediately() throws {
+    let suite = "ChamferUITests.Models.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    ModelsPreferences.saveEffort(.base, defaults: defaults)
+
+    #expect(ModelsSelection.effort(defaults: defaults) == .base)
+    #expect(
+        ModelsPreferences.loadState(
+            defaults: defaults,
+            device: device(memoryGB: 24)
+        ).effort == .base
+    )
+}
+
+/// The stored local-model name is deleted rather than migrated. Which model
+/// runs is the hardware's answer now, and a leftover name in preferences is
+/// exactly how a restored settings file talks a Mac into a second download.
+@Test func theStoredLocalModelNameIsRemovedOnMigration() throws {
+    let suite = "ChamferUITests.Models.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    defaults.set("mlx", forKey: "models.activeBackend")
+    defaults.set("gpt-oss:20b", forKey: "models.selectedLocalModel")
+
+    let migrated = ModelsPreferences.loadState(
+        defaults: defaults,
+        device: device(memoryGB: 8)
+    )
+
+    #expect(migrated.active == .local)
+    #expect(defaults.string(forKey: "models.selectedLocalModel") == nil)
+    // The hardware's answer, not the one that was written down.
+    #expect(migrated.recommendedModel.id == "qwen3.5:2b")
+}
+
+@Test func theOldCloudBackendNameIsBroughtForward() throws {
+    let suite = "ChamferUITests.Models.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    defaults.set("ollama", forKey: "models.activeBackend")
+    ModelsPreferences.saveCloudProvider(.openAI, defaults: defaults)
+
+    #expect(
+        ModelsPreferences.loadState(
+            defaults: defaults,
+            device: device(memoryGB: 24)
+        ).active == .cloud
+    )
+    #expect(ModelsSelection.activeModelID(defaults: defaults) == "cloud.openAI")
+}
+
+/// Someone whose active model has been removed from the product has not chosen
+/// its replacement. A fresh install is deliberately inert, and quietly
+/// activating an undownloaded model on their behalf would break that.
+@Test func aStoredAppleSelectionBecomesNothingRatherThanTheLocalModel() throws {
+    let suite = "ChamferUITests.Models.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    defaults.set("apple", forKey: "models.activeBackend")
+
+    let migrated = ModelsPreferences.loadState(
+        defaults: defaults,
+        device: device(memoryGB: 24)
+    )
+
+    #expect(migrated.active == nil)
+    #expect(ModelsSelection.activeModelID(defaults: defaults) == nil)
+    #expect(defaults.string(forKey: "models.activeBackend") == nil)
+}
+
+@Test func theLocalModelIdentifierIsAbstractRatherThanAModelName() {
+    #expect(RewritePolicy.localModelIdentifier == "local.ollama")
+    #expect(ModelsSelection.localModelID(device: device(memoryGB: 16)) == "qwen3.5:4b")
+    #expect(ModelsSelection.localModelID(device: device(memoryGB: 64)) == "gpt-oss:20b")
+}
+
+// MARK: - Hierarchy
+
+/// The whole redesign is in these numbers. Local carries a filled, shadowed
+/// surface; cloud carries a hairline. Hover moves within a path's band rather
+/// than across the gap between them, so cloud can never out-shout local by
+/// being pointed at.
+@Test func theLocalCardOutweighsCloudInEveryState() {
+    for localActive in [true, false] {
+        let local = ModelsSurfaceResponse.presentation(
+            for: .local,
+            isActive: localActive,
+            isHovered: false
+        )
+        let hoveredCloud = ModelsSurfaceResponse.presentation(
+            for: .cloud,
+            isActive: true,
+            isHovered: true
+        )
+
+        #expect(local.paperOpacity > hoveredCloud.paperOpacity)
+        #expect(local.shadowRadius > hoveredCloud.shadowRadius)
+    }
+}
+
+@Test func hoveringStrengthensASurfaceWithoutMovingItFar() {
+    for backend in ModelsBackendID.allCases {
+        let resting = ModelsSurfaceResponse.presentation(
+            for: backend,
+            isActive: false,
+            isHovered: false
+        )
+        let hovered = ModelsSurfaceResponse.presentation(
+            for: backend,
+            isActive: false,
+            isHovered: true
+        )
+
+        #expect(hovered.borderOpacity > resting.borderOpacity)
+        #expect(hovered.shadowOpacity > resting.shadowOpacity)
+        #expect(hovered.lift < 0)
+        #expect(hovered.lift > -6)
+    }
+}
+
+@Test func activationIsVisibleWithoutTheCardChangingSize() {
+    for backend in ModelsBackendID.allCases {
+        let resting = ModelsSurfaceResponse.presentation(
+            for: backend,
+            isActive: false,
+            isHovered: false
+        )
+        let active = ModelsSurfaceResponse.presentation(
+            for: backend,
+            isActive: true,
+            isHovered: false
+        )
+
+        #expect(active.tintOpacity > resting.tintOpacity)
+        #expect(active.borderOpacity > resting.borderOpacity)
+        #expect(active.lift == resting.lift)
+    }
+}
+
+/// Opening cloud's panel pushes the page behind it back rather than hiding it,
+/// so the thing being configured stays visible.
+@Test func openingTheCloudPanelRecessesEverythingBehindIt() {
+    for backend in ModelsBackendID.allCases {
+        let normal = ModelsSurfaceResponse.presentation(
+            for: backend,
+            isActive: true,
+            isHovered: false
+        )
+        let recessed = ModelsSurfaceResponse.presentation(
+            for: backend,
+            isActive: true,
+            isHovered: false,
+            isRecessed: true
+        )
+
+        #expect(recessed.tintOpacity < normal.tintOpacity)
+        #expect(recessed.shadowOpacity < normal.shadowOpacity)
+    }
+}
+
+@Test func theLocalAmbientWashSitsAboveTheCloudOneAtRest() {
+    let local = ModelsBloomResponse.presentation(
+        for: .local,
+        active: nil,
+        hovered: nil
+    )
+    let cloud = ModelsBloomResponse.presentation(
+        for: .cloud,
+        active: nil,
+        hovered: nil
+    )
+
+    #expect(local.opacity > cloud.opacity)
+    #expect(local.scale > cloud.scale)
+}
+
+@Test func hoveringAlwaysAddsBloomExpansionAndIntensity() {
     for backend in ModelsBackendID.allCases {
         let resting = ModelsBloomResponse.presentation(
             for: backend,
-            active: .apple,
-            selected: .apple,
+            active: nil,
             hovered: nil
         )
         let hovered = ModelsBloomResponse.presentation(
             for: backend,
-            active: .apple,
-            selected: .apple,
+            active: nil,
             hovered: backend
         )
 
@@ -167,703 +555,96 @@ import Testing
     }
 }
 
-@Test func activeAppleGlowRemainsStrongerThanInactiveHoverGlows() {
-    let activeApple = ModelsBloomResponse.presentation(
-        for: .apple,
-        active: .apple,
-        selected: .apple,
-        hovered: nil
-    )
-    let hoveredLocal = ModelsBloomResponse.presentation(
-        for: .mlx,
-        active: .apple,
-        selected: .apple,
-        hovered: .mlx
-    )
-    let hoveredCloud = ModelsBloomResponse.presentation(
-        for: .ollama,
-        active: .apple,
-        selected: .apple,
-        hovered: .ollama
-    )
+// MARK: - Motion
 
-    #expect(activeApple.opacity > hoveredLocal.opacity)
-    #expect(activeApple.opacity > hoveredCloud.opacity)
-}
-
-@Test func expandedLandscapeMovesFocusInwardAndSoftensOtherModels() {
-    var state = ModelsLandscapeState()
-    let restingMLX = ModelsLandscapeLayout.placement(for: .mlx, state: state)
-    let restingApple = ModelsLandscapeLayout.placement(for: .apple, state: state)
-
-    state.select(.mlx)
-    let focusedMLX = ModelsLandscapeLayout.placement(for: .mlx, state: state)
-    let softenedApple = ModelsLandscapeLayout.placement(for: .apple, state: state)
-
-    #expect(focusedMLX.y < restingMLX.y)
-    #expect(focusedMLX.opacity == 1)
-    #expect(softenedApple.x < restingApple.x)
-    #expect(softenedApple.opacity < 0.4)
-}
-
-@Test func expandingAppleLiftsItsSummaryAwayFromTheConfigurationSheet() {
-    var state = ModelsLandscapeState()
-    let restingApple = ModelsLandscapeLayout.placement(for: .apple, state: state)
-
-    state.select(.apple)
-    let expandedApple = ModelsLandscapeLayout.placement(for: .apple, state: state)
-
-    #expect(expandedApple.y <= restingApple.y)
-}
-
-@Test func modelSelectionMotionUsesAFastSymmetricalMorphSequence() {
-    let standard = ModelsMotionResponse.timing(reduceMotion: false)
+@Test func leavingIsQuickerThanArrivingAndReducedMotionShortensBoth() {
+    let full = ModelsMotionResponse.timing(reduceMotion: false)
     let reduced = ModelsMotionResponse.timing(reduceMotion: true)
 
-    #expect(standard.peripheralDuration <= 0.18)
-    #expect(standard.focusDuration <= 0.26)
-    #expect(standard.bloomDuration <= 0.32)
-    // Was an equality. Opening is showing you something; closing is getting out
-    // of the way, and should not take as long as arriving did.
-    #expect(standard.morphCloseDuration < standard.morphOpenDuration)
-    #expect(standard.morphOpenDuration <= 0.24)
-    #expect(standard.contentRevealDelay > 0)
-    // Pinned to the timeline's own window rather than to a number repeated
-    // here. The sheet's content starts when the pill's label has finished
-    // leaving, and these two descriptions of the morph must not drift apart.
-    #expect(
-        standard.contentRevealDelay
-            == standard.morphOpenDuration
-                * Double(ModelsConfigurationTimeline.contentBegins)
-    )
-    #expect(
-        standard.contentRevealDuration
-            >= standard.morphOpenDuration * 0.60
-    )
-    #expect(
-        standard.contentRevealDelay + standard.contentRevealDuration
-            <= standard.morphOpenDuration
-    )
-    #expect(standard.contentHideDuration >= 0.08)
-    #expect(
-        standard.contentHideDuration
-            <= standard.morphCloseDuration * 0.50
-    )
-    #expect(standard.contentHideDuration < standard.contentRevealDuration)
-    #expect(standard.bloomDuration > standard.focusDuration)
-    #expect(standard.sheetRise == 0)
-
-    #expect(reduced.contentRevealDelay == 0)
-    #expect(reduced.sheetRise == 0)
-    #expect(reduced.focusDuration < standard.focusDuration)
-    #expect(reduced.bloomDuration < standard.bloomDuration)
+    #expect(full.panelClose < full.panelOpen)
+    #expect(reduced.panelOpen < full.panelOpen)
+    #expect(reduced.panelClose <= full.panelClose)
+    #expect(reduced.ambient < full.ambient)
 }
 
-@Test func everyLandscapeActionHasAPersistentRectangularPillSurface() {
-    for backend in ModelsBackendID.allCases {
-        let resting = ModelsZoneActionResponse.presentation(
-            for: backend,
-            isHovered: false
-        )
-        let hovered = ModelsZoneActionResponse.presentation(
-            for: backend,
-            isHovered: true
-        )
+// MARK: - Layout
 
-        #expect(resting.fillOpacity >= 0.12)
-        #expect(resting.borderOpacity >= 0.30)
-        #expect(resting.minimumHeight >= 38)
-        #expect(resting.cornerRadius >= 10)
-        #expect(resting.cornerRadius < resting.minimumHeight / 2)
-        #expect(hovered.fillOpacity > resting.fillOpacity)
-        #expect(hovered.borderOpacity > resting.borderOpacity)
+@Test func theLocalColumnIsTheLargestThingOnThePageAtEverySupportedSize() {
+    for height in [Chamfer.Window.minimumHeight, 720, Chamfer.Window.designedHeight] {
+        let size = CGSize(width: Chamfer.Window.width - 64, height: height - 150)
+        let metrics = ModelsPageMetrics.metrics(for: size)
+
+        #expect(metrics.primaryWidth > metrics.configurationWidth)
+        // Just under two-thirds. Any closer to half and the two columns read as
+        // a pair of equals, which is the hierarchy this page exists to undo.
+        #expect(metrics.primaryWidth > (metrics.primaryWidth + metrics.configurationWidth) * 0.58)
+        #expect(metrics.minimumRowHeight > metrics.cloudHeight)
+
+        let used = metrics.horizontalPadding * 2
+            + metrics.primaryWidth
+            + metrics.columnGap
+            + metrics.configurationWidth
+        #expect(abs(used - size.width) < 0.5)
     }
 }
 
-@Test func configurationSurfaceMorphUsesAReversibleButtonToSheetLifecycle() {
-    var morph = ModelsConfigurationMorphState()
+@Test func aShortWindowTightensRatherThanKeepingItsMargins() {
+    let short = ModelsPageMetrics.metrics(for: CGSize(width: 716, height: 430))
+    let tall = ModelsPageMetrics.metrics(for: CGSize(width: 716, height: 700))
 
-    morph.beginOpening(.apple)
-    #expect(morph.phase == .mounted)
-    #expect(morph.mountedBackend == .apple)
-    #expect(!morph.contentVisible)
-
-    morph.beginExpanding()
-    #expect(morph.phase == .expanding)
-    #expect(morph.contentVisible)
-
-    morph.finishOpening()
-    #expect(morph.phase == .sheet)
-    #expect(morph.contentVisible)
-
-    morph.beginClosing()
-    #expect(morph.phase == .collapsing)
-    #expect(!morph.contentVisible)
-
-    morph.finishClosing()
-    #expect(morph.phase == .button)
-    #expect(morph.mountedBackend == nil)
+    #expect(short.isCompact)
+    #expect(!tall.isCompact)
+    #expect(short.minimumRowHeight < tall.minimumRowHeight)
+    #expect(short.topPadding < tall.topPadding)
+    #expect(short.horizontalPadding < tall.horizontalPadding)
+    #expect(short.cloudHeight <= tall.cloudHeight)
 }
 
-@Test func contentRevealWaitsUntilTheSurfaceHasBegunExpanding() {
-    let timing = ModelsMotionResponse.timing(reduceMotion: false)
+/// The cloud panel's arrival is one number, and leaving is its exact inverse.
+@Test func theCloudPanelArrivesAndLeavesAlongTheSamePath() {
+    #expect(ModelsPanelPresentation.opacity(progress: 0) == 0)
+    #expect(ModelsPanelPresentation.opacity(progress: 1) == 1)
+    #expect(ModelsPanelPresentation.scale(progress: 0) == 0.90)
+    #expect(ModelsPanelPresentation.scale(progress: 1) == 1)
 
-    #expect(timing.contentRevealDelay >= timing.morphOpenDuration * 0.20)
-    #expect(
-        timing.contentRevealDelay + timing.contentRevealDuration
-            <= timing.morphOpenDuration
-    )
-}
-
-@Test func closingKeepsTheSurfaceMountedUntilItReachesItsButton() {
-    var morph = ModelsConfigurationMorphState()
-
-    morph.beginOpening(.mlx)
-    morph.beginExpanding()
-    morph.finishOpening()
-    morph.beginClosing()
-
-    #expect(morph.phase == .collapsing)
-    #expect(morph.mountedBackend == .mlx)
-    #expect(!morph.contentVisible)
-
-    morph.finishClosing()
-
-    #expect(morph.phase == .button)
-    #expect(morph.mountedBackend == nil)
-}
-
-@Test func explicitConfigurationMorphUsesOneMonotonicFramePath() {
-    let source = CGRect(x: 42, y: 510, width: 124, height: 38)
-    let destination = CGRect(x: 176, y: 248, width: 470, height: 302)
-
-    let start = ModelsConfigurationMorphGeometry.frame(
-        from: source,
-        to: destination,
-        progress: 0
-    )
-    let midpoint = ModelsConfigurationMorphGeometry.frame(
-        from: source,
-        to: destination,
-        progress: 0.5
-    )
-    let end = ModelsConfigurationMorphGeometry.frame(
-        from: source,
-        to: destination,
-        progress: 1
-    )
-
-    #expect(start == source)
-    #expect(end == destination)
-    #expect(midpoint.midX == (source.midX + destination.midX) / 2)
-    #expect(midpoint.midY == (source.midY + destination.midY) / 2)
-    #expect(midpoint.width == (source.width + destination.width) / 2)
-    #expect(midpoint.height == (source.height + destination.height) / 2)
-
-    let clampedStart = ModelsConfigurationMorphGeometry.frame(
-        from: source,
-        to: destination,
-        progress: -0.5
-    )
-    let clampedEnd = ModelsConfigurationMorphGeometry.frame(
-        from: source,
-        to: destination,
-        progress: 1.5
-    )
-
-    #expect(clampedStart == source)
-    #expect(clampedEnd == destination)
-
-    #expect(
-        ModelsConfigurationMorphGeometry.cornerRadius(progress: 0)
-            == 12
-    )
-    #expect(
-        ModelsConfigurationMorphGeometry.cornerRadius(progress: 0.5)
-            == 19.5
-    )
-    #expect(
-        ModelsConfigurationMorphGeometry.cornerRadius(progress: 1)
-            == 27
-    )
-}
-
-@Test func configurationSheetUsesAStableBackendSpecificEndpoint() {
-    let canvas = CGSize(width: 1_000, height: 700)
-    let apple = ModelsConfigurationLayout.sheetFrame(
-        for: .apple,
-        canvasSize: canvas
-    )
-    let local = ModelsConfigurationLayout.sheetFrame(
-        for: .mlx,
-        canvasSize: canvas
-    )
-    let cloud = ModelsConfigurationLayout.sheetFrame(
-        for: .ollama,
-        canvasSize: canvas
-    )
-
-    #expect(apple.width == 470)
-    #expect(apple.midX == 390)
-    #expect(local.midX == 610)
-    #expect(cloud.midX == 500)
-    #expect(apple.midY == 462)
-    #expect(local.midY == 462)
-    #expect(cloud.midY == 462)
-    #expect(cloud.height > local.height)
-    #expect(local.height > apple.height)
-}
-
-@Test func configurationSheetWidthClampsToTheAvailableCanvas() {
-    let frame = ModelsConfigurationLayout.sheetFrame(
-        for: .apple,
-        canvasSize: CGSize(width: 400, height: 620)
-    )
-
-    #expect(frame.width == 344)
-    #expect(frame.minX >= 0)
-    #expect(frame.maxX <= 400)
-}
-
-@Test func oneTimelineRevealsSettingsWhileRetiringThePillLabel() {
-    let start = ModelsConfigurationTimeline.presentation(progress: 0)
-    let end = ModelsConfigurationTimeline.presentation(progress: 1)
-
-    #expect(start.sheetContentOpacity == 0)
-    #expect(start.pillLabelOpacity == 1)
-    #expect(start.peripheralProgress == 0)
-
-    #expect(end.sheetContentOpacity == 1)
-    #expect(end.pillLabelOpacity == 0)
-    #expect(end.peripheralProgress == 1)
-
-    // Both layers draw text, in the same place, at the same size. While their
-    // windows overlapped the morph cross-dissolved one glyph run through
-    // another, which is what read as the label mangling itself on the way out
-    // and back. The pill must be gone before the sheet says anything.
-    for step in 0...200 {
-        let frame = ModelsConfigurationTimeline.presentation(
-            progress: CGFloat(step) / 200
-        )
-        #expect(frame.pillLabelOpacity == 0 || frame.sheetContentOpacity == 0)
+    // Monotonic, so a reversal in flight retraces rather than jumping.
+    let samples = stride(from: 0.0, through: 1.0, by: 0.1).map {
+        ModelsPanelPresentation.scale(progress: CGFloat($0))
     }
+    #expect(zip(samples, samples.dropFirst()).allSatisfy { $0 <= $1 })
 }
 
-/// `ModelsBackendTintResponse` promises the action and its replacement surface
-/// share one tint source "so mounting the morph cannot introduce a one-frame
-/// color discontinuity". That was only true of an unhovered button — and the
-/// button being morphed has just been clicked, so it is never unhovered.
-@Test func mountingTheMorphReproducesTheButtonItGrewFrom() {
-    for backend in [ModelsBackendID.apple, .mlx, .ollama] {
-        for hovered in [true, false] {
-            let button = ModelsZoneActionResponse.presentation(
-                for: backend,
-                isHovered: hovered
-            )
-            let mounted = ModelsSheetSurfaceResponse.morphPresentation(
-                for: backend,
-                progress: 0,
-                isHovered: hovered
-            )
+@Test func openingTheCloudPanelPushesThePageBackWithoutHidingIt() {
+    let closed = ModelsPanelPresentation.recession(progress: 0)
+    let open = ModelsPanelPresentation.recession(progress: 1)
 
-            #expect(mounted.paperOpacity == button.paperOpacity)
-            #expect(mounted.primaryOpacity == button.fillOpacity)
-            #expect(mounted.borderOpacity == button.borderOpacity)
-            #expect(mounted.shadowOpacity == button.shadowOpacity)
-        }
-    }
+    #expect(closed.scale == 1)
+    #expect(closed.opacity == 1)
+    #expect(!closed.isRecessed)
+
+    #expect(open.scale < 1)
+    #expect(open.isRecessed)
+    // Still readable behind the panel: the thing being configured has to stay
+    // visible while it is configured.
+    #expect(open.opacity > 0.4)
 }
 
-@Test func landscapePlacementFollowsTheSameReversibleProgressAsTheSheet() {
-    let resting = ModelsLandscapeLayout.transitionPlacement(
-        for: .apple,
-        active: .apple,
-        expanded: .ollama,
-        progress: 0
-    )
-    let midpoint = ModelsLandscapeLayout.transitionPlacement(
-        for: .apple,
-        active: .apple,
-        expanded: .ollama,
-        progress: 0.5
-    )
-    let focused = ModelsLandscapeLayout.transitionPlacement(
-        for: .apple,
-        active: .apple,
-        expanded: .ollama,
-        progress: 1
-    )
+// MARK: - The bottom bar reads the same state
 
-    #expect(resting.x == 0.24)
-    #expect(resting.opacity == 1)
-    #expect(focused.x == 0.14)
-    #expect(focused.opacity == 0.12)
-    #expect(midpoint.x == 0.19)
-    #expect(midpoint.opacity == 0.56)
-}
+@Test func theBottomBarNamesTheSameTwoPathsWithTheSameStatuses() throws {
+    var dashboard = state(memoryGB: 24)
+    dashboard.synchronizeInstalledLocalModels(["qwen3.5:9b"])
+    dashboard.activate(.local)
 
-@Test func modelZoneContentFadesWithoutChangingItsStructuralRole() {
-    let selectedStart = ModelsZoneTimeline.presentation(
-        for: .apple,
-        active: .apple,
-        expanded: .apple,
-        progress: 0
-    )
-    let selectedEnd = ModelsZoneTimeline.presentation(
-        for: .apple,
-        active: .apple,
-        expanded: .apple,
-        progress: 1
-    )
-    let peripheralEnd = ModelsZoneTimeline.presentation(
-        for: .mlx,
-        active: .apple,
-        expanded: .apple,
-        progress: 1
-    )
+    let entries = Backend.all(state: dashboard)
 
-    #expect(selectedStart.titleOpacity == 1)
-    #expect(selectedStart.detailOpacity == 1)
-    #expect(selectedStart.actionOpacity == 1)
-    #expect(selectedStart.topStatusOpacity == 0)
-    #expect(selectedStart.besideStatusOpacity == 1)
+    #expect(entries.map(\.backendID) == [.local, .cloud])
+    let local = try #require(entries.first { $0.id == .local })
+    #expect(local.name == "Qwen3.5 9B")
+    #expect(local.shortName == "Local Model")
+    #expect(local.status == "ACTIVE")
 
-    #expect(selectedEnd.titleOpacity == 1)
-    #expect(selectedEnd.detailOpacity == 1)
-    #expect(selectedEnd.actionOpacity == 0)
-    #expect(selectedEnd.topStatusOpacity == 1)
-    #expect(selectedEnd.besideStatusOpacity == 0)
-
-    #expect(peripheralEnd.titleOpacity == 0.12)
-    #expect(peripheralEnd.detailOpacity == 0)
-    #expect(peripheralEnd.actionOpacity == 0)
-}
-
-@Test func ambientBloomFollowsTheConfigurationProgressInsteadOfSelectionState() {
-    let resting = ModelsBloomResponse.presentation(
-        for: .mlx,
-        active: .apple,
-        selected: .apple,
-        hovered: nil
-    )
-    let selected = ModelsBloomResponse.presentation(
-        for: .mlx,
-        active: .apple,
-        selected: .mlx,
-        hovered: nil
-    )
-    let start = ModelsBloomResponse.transitionPresentation(
-        for: .mlx,
-        active: .apple,
-        selected: .mlx,
-        hovered: nil,
-        progress: 0
-    )
-    let end = ModelsBloomResponse.transitionPresentation(
-        for: .mlx,
-        active: .apple,
-        selected: .mlx,
-        hovered: nil,
-        progress: 1
-    )
-
-    #expect(start == resting)
-    #expect(end == selected)
-}
-
-@Test func expandedCloudUsesAHeaderClearFocusBandAboveItsSheet() {
-    var state = ModelsLandscapeState()
-    state.select(.ollama)
-
-    let focusedCloud = ModelsLandscapeLayout.placement(for: .ollama, state: state)
-
-    #expect(focusedCloud.y >= 0.35)
-    #expect(focusedCloud.y <= 0.37)
-}
-
-@Test func restingUpperModelCopyClearsThePageHeading() {
-    let state = ModelsLandscapeState()
-    let apple = ModelsLandscapeLayout.placement(for: .apple, state: state)
-    let local = ModelsLandscapeLayout.placement(for: .mlx, state: state)
-
-    #expect(apple.y >= 0.35)
-    #expect(local.y >= 0.36)
-}
-
-@Test func expandedUpperModelCopyStaysInAHeaderSafeBand() {
-    for selected in ModelsBackendID.allCases {
-        var state = ModelsLandscapeState()
-        state.select(selected)
-
-        for backend in ModelsBackendID.allCases {
-            let placement = ModelsLandscapeLayout.placement(
-                for: backend,
-                state: state
-            )
-
-            if placement.y < 0.70 {
-                #expect(placement.y >= 0.35)
-            }
-        }
-    }
-}
-
-@Test func expandedSheetPushesInactiveModelsToQuietOuterPositions() {
-    var state = ModelsLandscapeState()
-    state.select(.ollama)
-
-    let apple = ModelsLandscapeLayout.placement(for: .apple, state: state)
-    let local = ModelsLandscapeLayout.placement(for: .mlx, state: state)
-
-    #expect(apple.x <= 0.15)
-    #expect(local.x >= 0.85)
-    #expect(apple.opacity <= 0.12)
-    #expect(local.opacity <= 0.12)
-    #expect(apple.scale <= 0.91)
-    #expect(local.scale <= 0.91)
-}
-
-@Test func expandedConfigurationUsesConciseNonOverlappingModelCopy() {
-    var state = ModelsLandscapeState()
-
-    #expect(ModelsLandscapeContent.mode(for: .apple, state: state) == .full)
-    #expect(ModelsLandscapeContent.mode(for: .mlx, state: state) == .full)
-    #expect(ModelsLandscapeContent.mode(for: .ollama, state: state) == .full)
-
-    state.select(.ollama)
-
-    #expect(
-        ModelsLandscapeContent.mode(for: .ollama, state: state)
-            == .focusedSummary
-    )
-    #expect(
-        ModelsLandscapeContent.mode(for: .apple, state: state)
-            == .titleOnly
-    )
-    #expect(
-        ModelsLandscapeContent.mode(for: .mlx, state: state)
-            == .titleOnly
-    )
-}
-
-@Test func expandedActiveStatusMovesAboveTheTitleAwayFromTheSheetEdge() {
-    var state = ModelsLandscapeState()
-
-    #expect(
-        ModelsLandscapeContent.statusPlacement(for: .apple, state: state)
-            == .besideAction
-    )
-
-    state.select(.apple)
-
-    #expect(
-        ModelsLandscapeContent.statusPlacement(for: .apple, state: state)
-            == .aboveTitle
-    )
-}
-
-/// Zones are drawn inside `.scaleEffect(placement.scale)` and their action
-/// frames are measured through it, so the source frame's height over the
-/// button's unscaled height recovers that scale. The stand-in label sits
-/// outside the transform and has to reapply it, or it draws 11pt text into a
-/// box built for 11.66pt and the two swap sizes at the handover.
-@Test func theStandInLabelCarriesTheScaleOfTheZoneItReplaces() {
-    let unscaled = ModelsZoneActionResponse
-        .presentation(for: .apple, isHovered: true)
-        .minimumHeight
-
-    // Measured from a running build: the active zone sits at 1.06, the
-    // resting ones at 0.95, and everything drops to 0.90 while a sheet is open.
-    #expect(abs(ModelsMorphLabelScale.scale(
-        sourceHeight: 40.28, unscaledHeight: unscaled
-    ) - 1.06) < 0.001)
-    #expect(abs(ModelsMorphLabelScale.scale(
-        sourceHeight: 36.10, unscaledHeight: unscaled
-    ) - 0.95) < 0.001)
-    #expect(abs(ModelsMorphLabelScale.scale(
-        sourceHeight: 34.20, unscaledHeight: unscaled
-    ) - 0.90) < 0.001)
-
-    // A missing or degenerate measurement must not collapse the label.
-    #expect(ModelsMorphLabelScale.scale(sourceHeight: 0, unscaledHeight: unscaled) == 1)
-    #expect(ModelsMorphLabelScale.scale(sourceHeight: 40, unscaledHeight: 0) == 1)
-}
-
-/// Mounting the morph happens inside a transaction that disables animations,
-/// with progress still at zero. So nothing may look different at progress zero
-/// for having mounted — anything that does, changes in a single frame. The
-/// zone's glow used to drop 0.34 → 0.14 and shrink 1.10 → 0.95 right there,
-/// behind the very button being pressed.
-@Test func mountingTheMorphDoesNotDisturbTheGlowBehindTheButton() {
-    for isHovered in [true, false] {
-        for isActive in [true, false] {
-            let beforeMount = ModelsZoneGlowResponse.presentation(
-                isHovered: isHovered,
-                isActive: isActive,
-                isMorphSource: false,
-                transitionProgress: 0
-            )
-            let atMount = ModelsZoneGlowResponse.presentation(
-                isHovered: isHovered,
-                isActive: isActive,
-                isMorphSource: true,
-                transitionProgress: 0
-            )
-
-            #expect(beforeMount == atMount)
-        }
-    }
-
-    // And it does still travel once progress moves — the continuity above is
-    // not simply the morph having no effect on the glow at all.
-    let settled = ModelsZoneGlowResponse.presentation(
-        isHovered: true,
-        isActive: true,
-        isMorphSource: true,
-        transitionProgress: 1
-    )
-    #expect(settled.opacity == 0.18)
-    #expect(settled.scale == 0.98)
-}
-
-/// The anti-flash invariant, and the one that actually mattered: a hovered
-/// action pill already looks like the sheet it becomes, so mounting the morph
-/// never has to travel the fill. Apple broke this by a hair — and its green is
-/// too pale to disguise the paper climbing underneath while it crossed.
-@Test func everyActionPillHandsOverToItsSheetWithoutChangingTint() {
-    for backend in ModelsBackendID.allCases {
-        let hoveredPill = ModelsZoneActionResponse.presentation(
-            for: backend,
-            isHovered: true
-        )
-        let sheet = ModelsSheetSurfaceResponse.intensity(for: backend)
-
-        #expect(abs(hoveredPill.fillOpacity - sheet.primaryOpacity) < 0.001)
-    }
-}
-
-/// Apple's stronger tint is deliberate compensation, not an inconsistency: its
-/// hue is the palest in the set and needs the extra opacity to carry the same
-/// visual weight over the sheet's near-white paper. Flattening it made Apple's
-/// panel open as a growing white rectangle.
-@Test func appleConfigurationSurfaceCarriesTheStrongestTintPresence() {
-    let apple = ModelsSheetSurfaceResponse.intensity(for: .apple)
-    let local = ModelsSheetSurfaceResponse.intensity(for: .mlx)
-    let cloud = ModelsSheetSurfaceResponse.intensity(for: .ollama)
-
-    #expect(apple.primaryOpacity >= local.primaryOpacity * 1.35)
-    #expect(apple.primaryOpacity >= cloud.primaryOpacity * 1.35)
-    #expect(apple.secondaryOpacity > local.secondaryOpacity)
-    #expect(apple.secondaryOpacity > cloud.secondaryOpacity)
-    #expect(apple.washOpacity >= local.washOpacity * 2)
-    #expect(apple.washOpacity >= cloud.washOpacity * 2)
-}
-
-@Test func morphingSurfaceBeginsAsTheActionPillAndBuildsIntoTheSheetTint() {
-    for backend in ModelsBackendID.allCases {
-        let action = ModelsZoneActionResponse.presentation(
-            for: backend,
-            isHovered: false
-        )
-        let sheet = ModelsSheetSurfaceResponse.intensity(for: backend)
-        let start = ModelsSheetSurfaceResponse.morphPresentation(
-            for: backend,
-            progress: 0
-        )
-        let midpoint = ModelsSheetSurfaceResponse.morphPresentation(
-            for: backend,
-            progress: 0.5
-        )
-        let end = ModelsSheetSurfaceResponse.morphPresentation(
-            for: backend,
-            progress: 1
-        )
-
-        #expect(start.paperOpacity == action.paperOpacity)
-        #expect(start.borderOpacity == action.borderOpacity)
-        // Every gradient stop starts level with the button's flat fill. This
-        // used to assert `secondaryOpacity == 0`, which is precisely what made
-        // the surface *not* begin as the action pill: its tint drained across
-        // its own width the instant it mounted.
-        #expect(start.primaryOpacity == action.fillOpacity)
-        #expect(start.secondaryOpacity == action.fillOpacity)
-        #expect(start.trailingOpacity == action.fillOpacity)
-
-        #expect(end.paperOpacity == 0.90)
-        #expect(end.primaryOpacity == sheet.primaryOpacity)
-        #expect(end.secondaryOpacity == sheet.secondaryOpacity)
-        #expect(end.trailingOpacity == 0)
-        #expect(end.borderOpacity == sheet.borderOpacity)
-        #expect(midpoint.trailingOpacity < start.trailingOpacity)
-        #expect(midpoint.shadowRadius > start.shadowRadius)
-        #expect(midpoint.shadowRadius < end.shadowRadius)
-    }
-}
-
-@Test func actionPillAndMorphSurfaceUseTheSameTintAtHandoff() {
-    for backend in ModelsBackendID.allCases {
-        let actionTint = ModelsBackendTintResponse.actionTint(for: backend)
-        let surfaceTint = ModelsBackendTintResponse.surfaceTint(for: backend)
-
-        #expect(actionTint == surfaceTint)
-    }
-}
-
-@Test func morphingPillContentKeepsItsSourceSizeWhileFollowingTheSurface() {
-    let source = CGRect(x: 40, y: 500, width: 124, height: 38)
-    let destination = CGRect(x: 180, y: 220, width: 470, height: 330)
-    let midpoint = ModelsMorphContentGeometry.frame(
-        from: source,
-        to: destination,
-        progress: 0.5
-    )
-    let end = ModelsMorphContentGeometry.frame(
-        from: source,
-        to: destination,
-        progress: 1
-    )
-
-    #expect(midpoint.width == 124)
-    #expect(midpoint.height == 38)
-    #expect(midpoint.midX == 258.5)
-    #expect(midpoint.midY == 452)
-    #expect(end.width == 124)
-    #expect(end.height == 38)
-    #expect(end.midX == destination.midX)
-    #expect(end.midY == destination.midY)
-}
-
-@Test func restingModelsFormTheApprovedAsymmetricalHierarchy() {
-    let state = ModelsLandscapeState()
-    let apple = ModelsLandscapeLayout.placement(for: .apple, state: state)
-    let local = ModelsLandscapeLayout.placement(for: .mlx, state: state)
-    let cloud = ModelsLandscapeLayout.placement(for: .ollama, state: state)
-
-    #expect(apple.x < cloud.x)
-    #expect(local.x > cloud.x)
-    #expect(apple.y < cloud.y)
-    #expect(local.y < cloud.y)
-    #expect(apple.scale > local.scale)
-    #expect(apple.scale > cloud.scale)
-    #expect(abs(cloud.x - 0.5) < 0.01)
-}
-
-@Test func activeModelStatusFlowsIntoTheExistingBottomBar() throws {
-    var modelsState = ModelsLandscapeState()
-    modelsState.select(.mlx)
-    modelsState.finishDownload()
-    modelsState.activateSelected()
-
-    let items = DashboardBottomBarItems.make(
-        for: Fixtures.state(for: .typical),
-        modelsState: modelsState
-    )
-    let modelsItem = try #require(items.first { $0.id == DashboardView.Tab.models })
-    let local = try #require(modelsItem.entries.first { $0.title == "Local Model" })
-    let apple = try #require(
-        modelsItem.entries.first { $0.title == "Foundation Models" }
-    )
-
-    #expect(local.detail == "ACTIVE")
-    #expect(apple.detail == "AVAILABLE")
+    let cloud = try #require(entries.first { $0.id == .cloud })
+    #expect(cloud.shortName == "Cloud Model")
+    #expect(cloud.status == "NOT CONNECTED")
 }

@@ -3,213 +3,87 @@ import ChamferCore
 import ChamferRewrite
 import SwiftUI
 
-/// A rewrite backend and whether it can run right now. The Models landscape
-/// and bottom bar both read these descriptors, so activation never disagrees
-/// between the page and its navigation chrome.
+/// A rewrite path and what it is doing right now. The Models page and the
+/// bottom bar both read these, so what the bar says can never disagree with
+/// what the page shows.
 struct Backend: Identifiable {
     let backendID: ModelsBackendID
     let name: String
     let shortName: String
     let status: String
-    let tone: Pill.Tone
-    let detail: String
-    let actionTitle: String
-    let actionSymbol: String
 
     var id: ModelsBackendID { backendID }
 
-    static func all(
-        runState: RunState,
-        landscapeState: ModelsLandscapeState,
-        appleAvailableOverride: Bool? = nil
-    ) -> [Backend] {
-        let appleAvailable: Bool
-        if let appleAvailableOverride {
-            appleAvailable = appleAvailableOverride
-        } else if case .rewritingUnavailable = runState {
-            appleAvailable = false
-        } else {
-            appleAvailable = true
-        }
-
-        return [
+    static func all(state: ModelsDashboardState) -> [Backend] {
+        [
             Backend(
-                backendID: .apple,
-                name: "Apple Foundation Models",
-                shortName: "Foundation Models",
-                status: landscapeState.status(
-                    for: .apple,
-                    appleAvailable: appleAvailable
-                ),
-                tone: tone(
-                    for: .apple,
-                    appleAvailable: appleAvailable,
-                    state: landscapeState
-                ),
-                detail: "Private, fast and built into macOS.",
-                actionTitle: "Manage settings",
-                actionSymbol: "arrow.right"
-            ),
-            Backend(
-                backendID: .mlx,
-                name: "Local Model",
+                backendID: .local,
+                name: state.recommendedModel.displayName + " "
+                    + state.recommendedModel.parameterLabel,
                 shortName: "Local Model",
-                status: landscapeState.status(
-                    for: .mlx,
-                    appleAvailable: appleAvailable
-                ),
-                tone: tone(
-                    for: .mlx,
-                    appleAvailable: appleAvailable,
-                    state: landscapeState
-                ),
-                detail: "Download a private model that runs entirely on your Mac.",
-                actionTitle: localActionTitle(
-                    for: landscapeState.installation,
-                    runtimeAvailable: landscapeState.localRuntimeAvailable
-                ),
-                actionSymbol: "arrow.down"
+                status: state.status(for: .local)
             ),
             Backend(
-                backendID: .ollama,
+                backendID: .cloud,
                 name: "Cloud Model",
                 shortName: "Cloud Model",
-                status: landscapeState.status(
-                    for: .ollama,
-                    appleAvailable: appleAvailable
-                ),
-                tone: tone(
-                    for: .ollama,
-                    appleAvailable: appleAvailable,
-                    state: landscapeState
-                ),
-                detail: "Connect a supported cloud provider for access to larger models.",
-                actionTitle: landscapeState.connection == .connected
-                    ? "Manage provider"
-                    : "Connect provider",
-                actionSymbol: "arrow.up.right"
+                status: state.status(for: .cloud)
             )
         ]
     }
-
-    private static func localActionTitle(
-        for installation: ModelsInstallationState,
-        runtimeAvailable: Bool
-    ) -> String {
-        guard runtimeAvailable else { return "Install Ollama" }
-        return switch installation {
-        case .notInstalled: "Download model"
-        case .downloading: "Downloading…"
-        case .installed: "Manage model"
-        }
-    }
-
-    private static func tone(
-        for backend: ModelsBackendID,
-        appleAvailable: Bool,
-        state: ModelsLandscapeState
-    ) -> Pill.Tone {
-        if backend == .apple, !appleAvailable { return .danger }
-        return backend == state.active ? .positive : .neutral
-    }
 }
 
-private enum ModelsLandscapeCoordinateSpace {
-    static let name = "models-landscape"
+private enum ModelsCoordinateSpace {
+    static let name = "models-page"
 }
 
-struct ModelsExplicitConfigurationMorph: ViewModifier {
-    let sourceFrame: CGRect
-    let destinationFrame: CGRect
-    let progress: CGFloat
-
-    func body(content: Content) -> some View {
-        content.visualEffect { effect, _ in
-            let frame = ModelsConfigurationMorphGeometry.frame(
-                from: sourceFrame,
-                to: destinationFrame,
-                progress: progress
-            )
-            let scaleX = destinationFrame.width > 0
-                ? frame.width / destinationFrame.width
-                : 1
-            let scaleY = destinationFrame.height > 0
-                ? frame.height / destinationFrame.height
-                : 1
-
-            return effect
-                .scaleEffect(
-                    x: scaleX,
-                    y: scaleY,
-                    anchor: .center
-                )
-                .offset(
-                    x: frame.midX - destinationFrame.midX,
-                    y: frame.midY - destinationFrame.midY
-                )
-        }
-    }
-}
-
-/// A calm, open landscape of the three local-model choices. DashboardView
-/// keeps the existing page, bottom bar and floating close control around it;
-/// this view owns only the expressive content layer inside that page.
+/// The Models dashboard.
+///
+/// One hierarchy, stated three times over: the model this Mac runs is the
+/// largest surface on the page, its configuration sits beside it as part of the
+/// same object rather than under a disclosure, and cloud is a hairline strip
+/// underneath that is available without competing.
 struct ModelsPage: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.chamferModelsRuntimeProbe) private var runtimeProbeEnabled
 
-    let runState: RunState
-    @Binding var state: ModelsLandscapeState
+    @Binding var state: ModelsDashboardState
 
-    @State private var hoveredBackend: ModelsBackendID?
-    @State private var cloudProvider = ModelsPreferences.loadCloudProvider()
-    @State private var cloudCredential = ""
-    @State private var runtime = ModelsRuntimeModel()
-    @State private var configurationMorph = ModelsConfigurationMorphState()
-    @State private var configurationMorphProgress: CGFloat = 0
-    @State private var configurationMorphSourceFrame = CGRect.zero
-    /// Captured before `hoveredBackend` is cleared, because the surface has to
-    /// open from the button's hovered appearance rather than its resting one.
-    @State private var configurationMorphStartedHovered = false
-    @State private var actionFrames: [ModelsBackendID: CGRect] = [:]
+    @LegacyState private var hoveredBackend: ModelsBackendID?
+    @LegacyState private var cloudProvider = ModelsPreferences.loadCloudProvider()
+    @LegacyState private var cloudCredential = ""
+    @LegacyState private var runtime = ModelsRuntimeModel()
+    @LegacyState private var cloudRowFrame = CGRect.zero
+    /// Observed, not owned: provisioning starts at launch and outlives this
+    /// page, which is created and destroyed as you navigate.
+    private let provisioning = OllamaProvisioning.shared
+    /// How far the cloud panel is out. Driven explicitly rather than by a
+    /// `transition`, because a transition only resolves when the insertion
+    /// happens inside an animated update — and a page that opens *already*
+    /// showing the panel, as the design harness and state restoration both can,
+    /// leaves it stuck at its inserted opacity of zero. Everything here reads
+    /// one number instead.
+    @LegacyState private var panelProgress: CGFloat = 0
 
-    private var appleAvailable: Bool {
-        if runtime.didRefreshApple { return runtime.appleAvailable }
-        if case .rewritingUnavailable = runState { return false }
-        return true
-    }
-
-    private var backends: [Backend] {
-        Backend.all(
-            runState: runState,
-            landscapeState: state,
-            appleAvailableOverride: appleAvailable
-        )
-    }
-
-    private var motionTiming: ModelsMotionTiming {
+    private var timing: ModelsMotionTiming {
         ModelsMotionResponse.timing(reduceMotion: reduceMotion)
     }
 
-    /// The morph is the largest single transition in the app, which makes it
-    /// the one that most needs to be interruptible: clicking away while a card
-    /// is still expanding should redirect the motion rather than restart it
-    /// from a standstill. A spring does that; the fixed-duration ease this
-    /// replaces could not. Critically damped on purpose — every geometry helper
-    /// downstream reads `progress` directly, so overshoot would be visible.
-    private var configurationOpenAnimation: Animation {
+    /// Arriving. A larger surface than a popover, so nearer the sheet end of
+    /// the scale — but still critically damped: everything downstream reads
+    /// these values directly and overshoot would be visible as a wobble.
+    private var openAnimation: Animation {
         Chamfer.Motion.reduce(
-            .spring(duration: motionTiming.morphOpenDuration, bounce: 0),
+            .spring(duration: timing.panelOpen, bounce: 0),
             when: reduceMotion
         )
     }
 
-    /// Closing is quicker than opening. Opening is showing you something and
-    /// can afford to be seen doing it; closing is getting out of the way, and
-    /// anything longer than the gesture that asked for it feels like a wait.
-    /// `morphCloseDuration` has always existed for this and was never read.
-    private var configurationCloseAnimation: Animation {
+    /// Leaving. Deliberately shorter: showing you something can afford to be
+    /// seen doing it, getting out of the way cannot.
+    private var closeAnimation: Animation {
         Chamfer.Motion.reduce(
-            .spring(duration: motionTiming.morphCloseDuration, bounce: 0),
+            .spring(duration: timing.panelClose, bounce: 0),
             when: reduceMotion
         )
     }
@@ -217,185 +91,97 @@ struct ModelsPage: View {
     var body: some View {
         GeometryReader { proxy in
             let size = proxy.size
-            let expanded = configurationMorph.mountedBackend
-            let morphBackendID = expanded ?? state.selected
-            let morphSourceFrame = expanded == nil
-                ? actionFrames[morphBackendID]
-                    ?? fallbackActionFrame(
-                        for: morphBackendID,
-                        canvasSize: size
-                    )
-                : configurationMorphSourceFrame
-            let destinationFrame = ModelsConfigurationLayout.sheetFrame(
-                for: morphBackendID,
-                canvasSize: size
-            )
-            let timeline = ModelsConfigurationTimeline.presentation(
-                progress: configurationMorphProgress
-            )
-            let surfaceFrame = ModelsConfigurationMorphGeometry.frame(
-                from: morphSourceFrame,
-                to: destinationFrame,
-                progress: configurationMorphProgress
-            )
-            let morphContentFrame = ModelsMorphContentGeometry.frame(
-                from: morphSourceFrame,
-                to: destinationFrame,
-                progress: configurationMorphProgress
-            )
-            let morphBackend = backends.first {
-                $0.backendID == morphBackendID
-            } ?? backends[0]
+            let metrics = ModelsPageMetrics.metrics(for: size)
+            let recession = ModelsPanelPresentation.recession(progress: panelProgress)
 
             ZStack(alignment: .topLeading) {
                 Chamfer.Palette.canvas
 
                 ModelsAmbientField(
                     active: state.active,
-                    selected: morphBackendID,
                     hovered: hoveredBackend,
-                    transitionProgress: timeline.peripheralProgress,
+                    recessed: recession.isRecessed,
                     size: size
                 )
 
-                ModelsPageHeader()
-                    .padding(.top, 38)
-                    .padding(.leading, 42)
-                    .zIndex(4)
+                pageContent(metrics: metrics, recession: recession)
 
-                ForEach(backends) { backend in
-                    let placement = ModelsLandscapeLayout.transitionPlacement(
-                        for: backend.backendID,
-                        active: state.active,
-                        expanded: expanded,
-                        progress: timeline.peripheralProgress
+            }
+            // An overlay rather than a `zIndex`-ed sibling. The page below is a
+            // scroll view, which composites its own layer, and a sibling sharing
+            // that ZStack could end up beneath it however its z order was
+            // declared. An overlay is above its content by construction.
+            .overlay {
+                if panelProgress > 0.001 {
+                    ModelsCloudPanel(
+                        state: $state,
+                        provider: $cloudProvider,
+                        credential: $cloudCredential,
+                        errorMessage: runtime.errorMessage,
+                        isWorking: runtime.isWorking,
+                        onClose: closeCloudConfiguration,
+                        onConnect: connectProvider,
+                        onActivate: activateCloud
                     )
-                    let zoneTimeline = ModelsZoneTimeline.presentation(
-                        for: backend.backendID,
-                        active: state.active,
-                        expanded: expanded,
-                        progress: timeline.peripheralProgress
-                    )
-
-                    ModelsZone(
-                        backend: backend,
-                        isActive: state.active == backend.backendID,
-                        isSelected: state.selected == backend.backendID,
-                        presentation: zoneTimeline,
-                        transitionProgress: timeline.peripheralProgress,
-                        morphIsMounted: expanded != nil,
-                        isMorphSource: expanded == backend.backendID,
-                        action: { select(backend.backendID, canvasSize: size) },
-                        onActionFrameChange: { frame in
-                            guard frame.width > 0, frame.height > 0 else { return }
-                            actionFrames[backend.backendID] = frame
-                        },
-                        onHoverChange: { hovering in
-                            setHover(backend.backendID, hovering: hovering)
-                        }
-                    )
-                    .position(
-                        x: size.width * placement.x,
-                        y: size.height * placement.y
-                    )
-                    .scaleEffect(placement.scale)
-                    .opacity(placement.opacity)
-                    .zIndex(morphBackendID == backend.backendID ? 3 : 2)
-                }
-
-                ModelsConfigurationSurface(
-                    backend: morphBackendID,
-                    progress: configurationMorphProgress,
-                    cornerRadius: ModelsConfigurationMorphGeometry
-                        .cornerRadius(progress: configurationMorphProgress),
-                    startedHovered: configurationMorphStartedHovered
-                )
-                .frame(
-                    width: max(surfaceFrame.width, 1),
-                    height: max(surfaceFrame.height, 1)
-                )
-                .position(x: surfaceFrame.midX, y: surfaceFrame.midY)
-                .opacity(expanded == nil ? 0 : 1)
-                .allowsHitTesting(false)
-                .zIndex(8)
-
-                ModelsConfigurationSheet(
-                    state: $state,
-                    backend: morphBackendID,
-                    morphSourceFrame: morphSourceFrame,
-                    morphDestinationFrame: destinationFrame,
-                    morphProgress: configurationMorphProgress,
-                    contentProgress: CGFloat(timeline.sheetContentOpacity),
-                    contentInteractive: configurationMorph.phase == .sheet,
-                    appleAvailable: appleAvailable,
-                    localRuntimeAvailable: runtime.ollamaAvailable,
-                    physicalMemory: ProcessInfo.processInfo.physicalMemory,
-                    cloudProvider: $cloudProvider,
-                    cloudCredential: $cloudCredential,
-                    errorMessage: runtime.errorMessage,
-                    isWorking: runtime.isWorking,
-                    onSelectLocalModel: selectLocalModel,
-                    onClose: closeConfiguration,
-                    onActivate: activateSelected,
-                    onConnectProvider: connectProvider,
-                    onDownload: downloadSelectedModel,
-                    onInstallLocalRuntime: installLocalRuntime
-                )
-                .frame(
-                    width: destinationFrame.width,
-                    height: destinationFrame.height,
-                    alignment: .topLeading
-                )
-                .position(x: destinationFrame.midX, y: destinationFrame.midY)
-                .opacity(expanded == nil ? 0 : 1)
-                .zIndex(9)
-
-                ModelsMorphPillLabel(backend: morphBackend)
-                    // The zone this stands in for is scaled; this label is not
-                    // inside that transform, so it has to carry the same scale
-                    // or its text changes size at the handover.
+                    // Clamped low as well as high: a `GeometryReader`'s first
+                    // pass proposes zero, and an unclamped `size.width - 56` is
+                    // a negative frame at that moment.
+                    .frame(width: max(300, min(470, size.width - 56)))
+                    // Grows out of the row that opened it and shrinks back into
+                    // it: the same path in both directions, so the panel always
+                    // says where it came from.
                     .scaleEffect(
-                        ModelsMorphLabelScale.scale(
-                            sourceHeight: morphSourceFrame.height,
-                            unscaledHeight: ModelsZoneActionResponse
-                                .presentation(for: morphBackendID, isHovered: true)
-                                .minimumHeight
-                        )
-                    )
-                    .frame(
-                        width: max(morphContentFrame.width, 1),
-                        height: max(morphContentFrame.height, 1)
-                    )
-                    .position(
-                        x: morphContentFrame.midX,
-                        y: morphContentFrame.midY
+                        ModelsPanelPresentation.scale(progress: panelProgress),
+                        anchor: panelAnchor(canvas: size)
                     )
                     .opacity(
-                        expanded == nil
-                            ? 0
-                            : timeline.pillLabelOpacity
+                        Double(ModelsPanelPresentation.opacity(progress: panelProgress))
                     )
-                    .allowsHitTesting(false)
-                    .zIndex(10)
-
-                HStack(spacing: 8) {
-                    Rectangle()
-                        .fill(Chamfer.Palette.pageTextSoft.opacity(0.34))
-                        .frame(width: 22, height: 1)
-                    Text("Everything stays local.")
-                        .font(.system(size: 11, design: .serif))
-                        .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.68))
+                    .position(
+                        x: max(size.width / 2, 1),
+                        y: max(size.height * 0.46, 190)
+                    )
+                    .allowsHitTesting(panelProgress > 0.5)
                 }
-                .position(x: size.width - 112, y: size.height - 28)
-                .zIndex(1)
             }
             .clipped()
-            .coordinateSpace(name: ModelsLandscapeCoordinateSpace.name)
+            .coordinateSpace(name: ModelsCoordinateSpace.name)
         }
         .background(Chamfer.Palette.canvas)
-        .onExitCommand(perform: closeConfiguration)
+        .onExitCommand(perform: closeCloudConfiguration)
         .task {
-            await refreshModelRuntime()
+            // State can arrive with the panel already open — restored, or
+            // seeded by the harness. Match it without animating something the
+            // user did not do.
+            if state.cloudConfigurationOpen { panelProgress = 1 }
+            if case let .working(progress) = provisioning.state {
+                state.runtimeInstall = ModelsDownloadState(
+                    fraction: progress.fraction,
+                    stage: progress.summary
+                )
+            }
+            await refreshRuntime()
+        }
+        // Chamfer installs the runtime for you, so the card has to follow it.
+        // When it lands, the local path is asked what it can see rather than
+        // being told — presence is always a report about the disk.
+        .onChange(of: provisioning.state) { _, provisioningState in
+            withAnimation(Chamfer.Motion.quick) {
+                switch provisioningState {
+                case .idle:
+                    state.runtimeInstall = nil
+                case let .working(progress):
+                    state.runtimeInstall = ModelsDownloadState(
+                        fraction: progress.fraction,
+                        stage: progress.summary
+                    )
+                case .ready, .failed:
+                    state.runtimeInstall = nil
+                }
+            }
+            if case .ready = provisioningState {
+                Task { await refreshRuntime() }
+            }
         }
         .onChange(of: cloudProvider) { _, provider in
             ModelsPreferences.saveCloudProvider(provider)
@@ -404,67 +190,129 @@ struct ModelsPage: View {
         }
     }
 
-    private func select(_ backend: ModelsBackendID, canvasSize: CGSize) {
-        guard configurationMorph.mountedBackend == nil else { return }
-        Haptics.pop()
+    /// The composition, laid out once and then either placed or scrolled.
+    ///
+    /// The two columns take no explicit height: an `HStack` is as tall as its
+    /// tallest child, and both cards already stretch to fill it, so they match
+    /// each other by construction. Pinning them to a number is what let the
+    /// configuration column overflow its own frame.
+    @ViewBuilder
+    private func pageContent(
+        metrics: ModelsPageMetrics,
+        recession: ModelsPanelRecession
+    ) -> some View {
+        let body = VStack(alignment: .leading, spacing: 0) {
+            ModelsPageHeader(compact: metrics.isCompact)
+                .padding(.bottom, metrics.isCompact ? 18 : 24)
 
-        let wasHovered = hoveredBackend == backend
+            HStack(alignment: .top, spacing: metrics.columnGap) {
+                ModelsPrimaryCard(
+                    state: state,
+                    isHovered: hoveredBackend == .local,
+                    isRecessed: recession.isRecessed,
+                    errorMessage: runtime.errorMessage,
+                    onPrimaryAction: performLocalAction,
+                    onHoverChange: { hovering in
+                        setHover(.local, hovering: hovering)
+                    }
+                )
+                .frame(width: metrics.primaryWidth)
 
-        var setup = Transaction()
-        setup.disablesAnimations = true
-        withTransaction(setup) {
-            configurationMorphSourceFrame = actionFrames[backend]
-                ?? fallbackActionFrame(for: backend, canvasSize: canvasSize)
-            configurationMorphProgress = 0
-            configurationMorphStartedHovered = wasHovered
-            configurationMorph.beginOpening(backend)
-            state.select(backend)
-            hoveredBackend = nil
+                ModelsConfigurationColumn(
+                    effort: state.effort,
+                    isRecessed: recession.isRecessed,
+                    onSelect: select
+                )
+                .frame(width: metrics.configurationWidth)
+            }
+            .frame(minHeight: metrics.minimumRowHeight)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.bottom, metrics.rowGap)
+
+            ModelsCloudRow(
+                state: state,
+                provider: cloudProvider,
+                isHovered: hoveredBackend == .cloud,
+                isRecessed: recession.isRecessed,
+                onOpen: openCloudConfiguration,
+                onHoverChange: { hovering in
+                    setHover(.cloud, hovering: hovering)
+                }
+            )
+            .frame(height: metrics.cloudHeight)
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .named(ModelsCoordinateSpace.name))
+            } action: { frame in
+                cloudRowFrame = frame
+            }
+
+            ModelsLocalFootnote()
+                .padding(.top, metrics.isCompact ? 12 : 16)
         }
+        .padding(.horizontal, metrics.horizontalPadding)
+        .padding(.top, metrics.topPadding)
+        .padding(.bottom, metrics.isCompact ? 18 : 26)
+        // Receding rather than blurring: the page has to stay readable behind
+        // the panel so the thing being configured is still visible, and a blur
+        // on a surface this size costs a frame. Continuous with the panel's own
+        // progress, so the two are one movement rather than two that agree.
+        .scaleEffect(recession.scale, anchor: .top)
+        .opacity(recession.opacity)
+        .allowsHitTesting(!recession.isRecessed)
 
-        withAnimation(
-            configurationOpenAnimation,
-            completionCriteria: .logicallyComplete
-        ) {
-            configurationMorph.beginExpanding()
-            configurationMorphProgress = 1
-        } completion: {
-            guard configurationMorph.mountedBackend == backend,
-                  configurationMorph.phase == .expanding else { return }
-            configurationMorph.finishOpening()
-        }
+        // Always scrollable, never scrolling unnecessarily. `basedOnSize` means
+        // a composition that fits behaves exactly like a static page — no
+        // indicator, no rubber-banding — and one that does not stays reachable
+        // instead of being cropped. Which of the two it is cannot be predicted
+        // from the window alone: a download in progress adds a progress track,
+        // and an error adds a line of explanation.
+        ScrollView(.vertical, showsIndicators: false) { body }
+            .scrollBounceBehavior(.basedOnSize)
+            // Pinned. Without it a focusable control further down the page —
+            // the primary action — can pull the initial scroll position to
+            // itself, and the page opens with its own title already scrolled
+            // off the top.
+            .defaultScrollAnchor(.top)
     }
 
-    private func fallbackActionFrame(
-        for backend: ModelsBackendID,
-        canvasSize: CGSize
-    ) -> CGRect {
-        var restingState = state
-        restingState.expanded = nil
-        let placement = ModelsLandscapeLayout.placement(
-            for: backend,
-            state: restingState
+    /// The scale anchor is the cloud row's own centre, expressed in the unit
+    /// space of the canvas, so the panel is seen to come out of the strip that
+    /// was pressed rather than out of the middle of the page.
+    private func panelAnchor(canvas: CGSize) -> UnitPoint {
+        guard canvas.width > 0, canvas.height > 0, cloudRowFrame.midX > 0 else {
+            return UnitPoint(x: 0.5, y: 0.8)
+        }
+        return UnitPoint(
+            x: min(max(cloudRowFrame.midX / canvas.width, 0), 1),
+            y: min(max(cloudRowFrame.midY / canvas.height, 0), 1)
         )
-        let width: CGFloat = 124
-        let height: CGFloat = 38
+    }
 
-        return CGRect(
-            x: canvasSize.width * placement.x - width / 2,
-            y: canvasSize.height * placement.y - height / 2,
-            width: width,
-            height: height
-        )
+    // MARK: - Actions
+
+    private func select(_ effort: ModelEffort) {
+        guard effort != state.effort else { return }
+        Haptics.pop()
+        withAnimation(
+            Chamfer.Motion.reduce(
+                .spring(duration: timing.effortChange, bounce: 0),
+                when: reduceMotion
+            )
+        ) {
+            state.setEffort(effort)
+        }
+        ModelsPreferences.saveEffort(effort)
     }
 
     private func setHover(_ backend: ModelsBackendID, hovering: Bool) {
         // Deliberately slow: this drives the ambient background wash, not a
         // control's answer to the pointer, so it is allowed to drift.
-        let hoverAnimation = Chamfer.Motion.reduce(
-            .easeInOut(duration: 0.46),
-            when: reduceMotion
-        )
-
-        withAnimation(hoverAnimation) {
+        withAnimation(
+            Chamfer.Motion.reduce(
+                .easeInOut(duration: timing.ambient),
+                when: reduceMotion
+            )
+        ) {
             if hovering {
                 hoveredBackend = backend
             } else if hoveredBackend == backend {
@@ -473,57 +321,95 @@ struct ModelsPage: View {
         }
     }
 
-    /// Dismissal is punctuated like every other one in the app. Fired here
-    /// rather than inside `collapseConfiguration` so that activating a model —
-    /// which commits with its own pulse — cannot land two in a row.
-    private func closeConfiguration() {
-        guard configurationMorph.mountedBackend != nil else { return }
-        Haptics.commit()
-        collapseConfiguration(activatingSelection: false)
+    private func openCloudConfiguration() {
+        guard !state.cloudConfigurationOpen else { return }
+        Haptics.pop()
+        withAnimation(openAnimation) {
+            state.openCloudConfiguration()
+            panelProgress = 1
+        }
     }
 
-    private func activateSelected() {
+    private func closeCloudConfiguration() {
+        guard state.cloudConfigurationOpen else { return }
         Haptics.commit()
-        collapseConfiguration(activatingSelection: true)
+        withAnimation(closeAnimation) {
+            state.closeCloudConfiguration()
+            panelProgress = 0
+        }
     }
 
-    private func collapseConfiguration(activatingSelection: Bool) {
-        guard let collapsingBackend = configurationMorph.mountedBackend,
-              configurationMorph.phase != .collapsing else { return }
+    private func performLocalAction() {
+        switch ModelsLocalPresentation.action(for: state) {
+        case .preparingRuntime:
+            // Chamfer is already fetching it. Nothing for a press to do.
+            break
+        case .installRuntime:
+            guard let url = URL(string: "https://ollama.com/download") else { return }
+            NSWorkspace.shared.open(url)
+        case .download:
+            downloadModel()
+        case .activate:
+            activateLocal()
+        case .downloading, .alreadyActive:
+            break
+        }
+    }
 
-        var setup = Transaction()
-        setup.disablesAnimations = true
-        withTransaction(setup) {
-            configurationMorph.beginClosing()
+    /// Downloading is idempotent all the way down: the installer checks the
+    /// disk before it fetches anything and joins an existing pull rather than
+    /// starting a second one, so pressing this twice — or reopening the page
+    /// mid-download — costs nothing.
+    private func downloadModel() {
+        let model = state.recommendedModel
+        let device = state.device
+
+        Haptics.pop()
+        withAnimation(Chamfer.Motion.quick) {
+            state.beginDownload()
         }
 
-        withAnimation(
-            configurationCloseAnimation,
-            completionCriteria: .logicallyComplete
-        ) {
-            configurationMorphProgress = 0
-        } completion: {
-            guard configurationMorph.phase == .collapsing,
-                  configurationMorph.mountedBackend == collapsingBackend else {
-                return
-            }
-
-            var teardown = Transaction()
-            teardown.disablesAnimations = true
-            withTransaction(teardown) {
-                if activatingSelection {
-                    state.activateSelected()
-                    ModelsPreferences.save(state: state)
-                } else {
-                    state.closeConfiguration()
+        Task {
+            let outcome = await runtime.install(model, device: device) { progress in
+                withAnimation(
+                    Chamfer.Motion.reduce(
+                        .spring(duration: timing.progress, bounce: 0),
+                        when: reduceMotion
+                    )
+                ) {
+                    state.updateDownload(
+                        fraction: progress.fraction,
+                        stage: progress.stage
+                    )
                 }
-                configurationMorph.finishClosing()
-                configurationMorphProgress = 0
             }
+
+            withAnimation(Chamfer.Motion.navigation) {
+                state.finishDownload(installed: outcome.isInstalled)
+            }
+            if outcome.isInstalled { Haptics.commit() }
         }
+    }
+
+    private func activateLocal() {
+        Haptics.commit()
+        withAnimation(Chamfer.Motion.navigation) {
+            state.activate(.local)
+        }
+        ModelsPreferences.save(state: state)
+    }
+
+    private func activateCloud() {
+        Haptics.commit()
+        withAnimation(closeAnimation) {
+            state.activate(.cloud)
+            panelProgress = 0
+        }
+        ModelsPreferences.save(state: state)
     }
 
     private func connectProvider() {
+        guard let cloudProvider else { return }
         withAnimation(Chamfer.Motion.quick) {
             state.beginConnectionTest()
         }
@@ -535,68 +421,8 @@ struct ModelsPage: View {
             withAnimation(Chamfer.Motion.quick) {
                 state.finishConnectionTest(connected: connected)
             }
-            if connected {
-                cloudCredential = ""
-            }
+            if connected { cloudCredential = "" }
         }
-    }
-
-    private func downloadSelectedModel() {
-        guard runtime.ollamaAvailable else {
-            installLocalRuntime()
-            return
-        }
-        guard selectedLocalAssessment.fit != .unusable else { return }
-        if state.installation == .installed {
-            activateSelected()
-            return
-        }
-
-        withAnimation(Chamfer.Motion.quick) {
-            state.beginDownload()
-        }
-        Task {
-            if let installed = await runtime.download(
-                modelID: state.selectedLocalModelID
-            ) {
-                withAnimation(Chamfer.Motion.navigation) {
-                    state.synchronizeInstalledLocalModels(installed)
-                }
-            } else {
-                withAnimation(Chamfer.Motion.quick) {
-                    state.synchronizeInstalledLocalModels(
-                        state.installedLocalModelIDs
-                    )
-                }
-            }
-        }
-    }
-
-    private var selectedLocalAssessment: LocalModelAssessment {
-        guard let model = LocalModelCatalog.standard.first(where: {
-            $0.id == state.selectedLocalModelID
-        }) else {
-            return LocalModelAssessment(
-                fit: .unusable,
-                explanation: "Unknown model"
-            )
-        }
-        return LocalModelCatalog.assessment(
-            for: model,
-            physicalMemory: ProcessInfo.processInfo.physicalMemory
-        )
-    }
-
-    private func selectLocalModel(_ modelID: String) {
-        withAnimation(Chamfer.Motion.quick) {
-            state.selectLocalModel(modelID)
-        }
-        ModelsPreferences.save(state: state)
-    }
-
-    private func installLocalRuntime() {
-        guard let url = URL(string: "https://ollama.com/download") else { return }
-        NSWorkspace.shared.open(url)
     }
 
     /// Deliberately unanimated.
@@ -607,7 +433,8 @@ struct ModelsPage: View {
     /// this same state, so wrapping the write in a shorter curve retargeted
     /// that spring mid-flight and the black selector stuttered. Data arriving
     /// in the background is not an event the interface should animate.
-    private func refreshModelRuntime() async {
+    private func refreshRuntime() async {
+        guard runtimeProbeEnabled else { return }
         let snapshot = await runtime.refresh(provider: cloudProvider)
 
         var arrival = Transaction()
@@ -620,7 +447,11 @@ struct ModelsPage: View {
     }
 }
 
+// MARK: - Header
+
 private struct ModelsPageHeader: View {
+    let compact: Bool
+
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 9) {
@@ -630,16 +461,23 @@ private struct ModelsPageHeader: View {
                     .kerning(1.2)
                     .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.78))
             }
-            .padding(.bottom, 8)
+            .padding(.bottom, compact ? 5 : 8)
 
             Text("Models")
-                .font(.system(size: 40, weight: .regular, design: .serif))
+                .font(
+                    .system(
+                        size: compact ? 33 : 40,
+                        weight: .regular,
+                        design: .serif
+                    )
+                )
                 .tracking(-1.3)
                 .foregroundStyle(Chamfer.Palette.pageText)
 
-            Text("Choose how Chamfer understands and cleans your notes.")
-                .font(.system(size: 15, design: .serif))
+            Text("Chamfer picks the model your Mac can run, and you decide how hard it works.")
+                .font(.system(size: compact ? 13 : 15, design: .serif))
                 .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -661,446 +499,885 @@ private struct ModelsEyebrowMark: View {
     }
 }
 
-private struct ModelsZone: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovered = false
-
-    private static func glowCurve(reduceMotion: Bool) -> Animation {
-        Chamfer.Motion.reduce(.easeInOut(duration: 0.42), when: reduceMotion)
+private struct ModelsLocalFootnote: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Rectangle()
+                .fill(Chamfer.Palette.pageTextSoft.opacity(0.34))
+                .frame(width: 22, height: 1)
+            Text("The local model never sends a note anywhere.")
+                .font(.system(size: 11, design: .serif))
+                .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.68))
+        }
+        .accessibilityElement(children: .combine)
     }
+}
 
-    let backend: Backend
-    let isActive: Bool
-    let isSelected: Bool
-    let presentation: ModelsZoneTimelinePresentation
-    let transitionProgress: CGFloat
-    let morphIsMounted: Bool
-    let isMorphSource: Bool
-    let action: () -> Void
-    let onActionFrameChange: (CGRect) -> Void
+// MARK: - The primary card
+
+private struct ModelsPrimaryCard: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let state: ModelsDashboardState
+    let isHovered: Bool
+    let isRecessed: Bool
+    let errorMessage: String?
+    let onPrimaryAction: () -> Void
     let onHoverChange: (Bool) -> Void
 
-    private var horizontalAlignment: HorizontalAlignment {
-        switch backend.backendID {
-        case .apple: .leading
-        case .mlx: .trailing
-        case .ollama: .center
-        }
+    private var model: LocalModelDescriptor { state.recommendedModel }
+    private var action: ModelsLocalAction {
+        ModelsLocalPresentation.action(for: state)
     }
 
-    private var frameAlignment: Alignment {
-        switch backend.backendID {
-        case .apple: .topLeading
-        case .mlx: .topTrailing
-        case .ollama: .top
-        }
-    }
-
-    private var title: String {
-        backend.backendID == .apple
-            ? "Apple Foundation\nModels"
-            : backend.name
-    }
-
-    private var width: CGFloat {
-        switch backend.backendID {
-        case .apple: 245
-        case .mlx: 250
-        case .ollama: 310
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: horizontalAlignment, spacing: 0) {
-            statusLabel
-                .opacity(presentation.topStatusOpacity)
-                .frame(height: 24, alignment: .bottom)
-                .padding(.bottom, 8)
-
-            modelTitle(bottomPadding: 8)
-                .opacity(presentation.titleOpacity)
-
-            modelDetail(bottomPadding: 12)
-                .opacity(presentation.detailOpacity)
-
-            HStack(spacing: 9) {
-                if isActive {
-                    statusLabel
-                        .opacity(presentation.besideStatusOpacity)
-                }
-
-                ModelsZoneActionButton(
-                    backend: backend,
-                    retainsHover: isMorphSource && morphIsMounted,
-                    action: action,
-                    onFrameChange: onActionFrameChange
-                )
-                .opacity(
-                    isMorphSource && morphIsMounted
-                        ? 0
-                        : presentation.actionOpacity
-                )
-                .allowsHitTesting(!morphIsMounted)
-            }
-        }
-        .frame(width: width, height: 190, alignment: frameAlignment)
-        .contentShape(Rectangle())
-        .background {
-            Ellipse()
-                .fill(localGlow)
-                .frame(width: width + 96, height: 150)
-                .scaleEffect(glowPresentation.scale)
-                .blur(radius: 34)
-                .opacity(glowPresentation.opacity)
-        }
-        // The glow behind a zone scales and blurs, so it is motion and has to
-        // answer the setting — the ambient field it sits inside already does.
-        .onHover { hovering in
-            withAnimation(Self.glowCurve(reduceMotion: reduceMotion)) {
-                isHovered = hovering
-            }
-            onHoverChange(hovering)
-        }
-        .animation(Self.glowCurve(reduceMotion: reduceMotion), value: isHovered)
-    }
-
-    private func modelTitle(bottomPadding: CGFloat) -> some View {
-        let titlePresentation = ModelsTitleResponse.presentation(
-            isActive: isActive
-        )
-        return Text(title)
-            .font(
-                .system(
-                    size: titlePresentation.size,
-                    weight: titlePresentation.isBold ? .semibold : .regular,
-                    design: .serif
-                )
-            )
-            .tracking(-0.82)
-            .multilineTextAlignment(textAlignment)
-            .foregroundStyle(
-                isActive
-                    ? Chamfer.Palette.pageText
-                    : Chamfer.Palette.pageText.opacity(0.86)
-            )
-            .lineSpacing(-3)
-            .padding(.bottom, bottomPadding)
-    }
-
-    private func modelDetail(bottomPadding: CGFloat) -> some View {
-        Text(backend.detail)
-            .font(.system(size: 13, design: .serif))
-            .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.88))
-            .multilineTextAlignment(textAlignment)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.bottom, bottomPadding)
-    }
-
-    private var statusLabel: some View {
-        Text(backend.status)
-            .font(.system(size: 9, weight: .bold))
-            .kerning(1.05)
-            .foregroundStyle(statusForeground)
-            .padding(.horizontal, isActive ? 8 : 0)
-            .padding(.vertical, isActive ? 5 : 0)
-            .background {
-                if isActive {
-                    Capsule()
-                        .fill(
-                            backend.status == "UNAVAILABLE"
-                                ? Chamfer.Palette.dangerSoft.opacity(0.78)
-                                : Chamfer.Palette.positiveSoft.opacity(0.72)
-                        )
-                }
-            }
-    }
-
-    private var statusForeground: Color {
-        if backend.status == "UNAVAILABLE" { return Chamfer.Palette.danger }
-        if isActive { return Chamfer.Palette.positive.opacity(0.86) }
-        return Chamfer.Palette.pageTextSoft.opacity(0.72)
-    }
-
-    private var textAlignment: TextAlignment {
-        switch backend.backendID {
-        case .apple: .leading
-        case .mlx: .trailing
-        case .ollama: .center
-        }
-    }
-
-    private var localGlow: Color {
-        switch backend.backendID {
-        case .apple: Color(red: 0.78, green: 0.89, blue: 0.72)
-        case .mlx: Color(red: 0.76, green: 0.67, blue: 0.88)
-        case .ollama: Color(red: 0.94, green: 0.61, blue: 0.64)
-        }
-    }
-
-    private var glowPresentation: ModelsZoneGlowPresentation {
-        ModelsZoneGlowResponse.presentation(
+    private var presentation: ModelsSurfacePresentation {
+        ModelsSurfaceResponse.presentation(
+            for: .local,
+            isActive: state.active == .local,
             isHovered: isHovered,
-            isActive: isActive,
-            isMorphSource: isMorphSource,
-            transitionProgress: transitionProgress
+            isRecessed: isRecessed
         )
     }
-}
-
-private struct ModelsMorphPillLabel: View {
-    let backend: Backend
 
     var body: some View {
-        HStack(spacing: 5) {
-            Text(backend.actionTitle)
-            Image(systemName: backend.actionSymbol)
-                .font(.system(size: 10, weight: .semibold))
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            title.padding(.top, 14)
+            deviceStrip.padding(.top, 16)
+            facts.padding(.top, 10)
+
+            Spacer(minLength: 12)
+
+            statusBlock
+            actionRow.padding(.top, 14)
         }
-        .font(.system(size: 11, weight: .semibold))
-        // 0.96, matching the *hovered* button this stands in for. At 0.90 the
-        // label dimmed the frame it took over, and brightened again the frame
-        // it handed back — read as the text glitching on the way out and in.
-        .foregroundStyle(Chamfer.Palette.pageText.opacity(0.96))
-        .lineLimit(1)
-        .fixedSize()
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(ModelsCardSurface(backend: .local, presentation: presentation))
+        .offset(y: presentation.lift)
+        .animation(Chamfer.Motion.reduce(.spring(duration: 0.24, bounce: 0), when: reduceMotion), value: isHovered)
+        .onHover(perform: onHoverChange)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Local model, \(model.displayName) \(model.parameterLabel)")
+    }
+
+    private var header: some View {
+        HStack(alignment: .top) {
+            Text("RECOMMENDED FOR THIS MAC")
+                .font(.system(size: 9, weight: .bold))
+                .kerning(1.1)
+                .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.78))
+            Spacer(minLength: 8)
+            ModelsStatusBadge(
+                text: state.status(for: .local),
+                tone: badgeTone
+            )
+        }
+    }
+
+    private var badgeTone: ModelsStatusBadge.Tone {
+        if state.active == .local { return state.localReady ? .active : .danger }
+        if state.runtimeInstall != nil, !state.localRuntimeAvailable { return .working }
+        return switch state.installation {
+        case .installed: .ready
+        case .downloading: .working
+        case .notInstalled: .quiet
+        }
+    }
+
+    private var title: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Text(model.displayName)
+                    .font(.system(size: 34, weight: .regular, design: .serif))
+                    .tracking(-1)
+                    .foregroundStyle(Chamfer.Palette.pageText)
+                Text(model.parameterLabel)
+                    .font(.system(size: 15, weight: .semibold, design: .serif))
+                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
+            }
+            Text(model.characterisation)
+                .font(.system(size: 13, design: .serif))
+                .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.92))
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(1)
+        }
+    }
+
+    /// Why this model, said in the machine's own numbers. The recommendation is
+    /// not a choice the user gets to make, so it has to be a recommendation
+    /// they can see the reasoning behind.
+    private var deviceStrip: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(state.device.summary.uppercased())
+                .font(.system(size: 9, weight: .semibold))
+                .kerning(0.55)
+                .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.72))
+            Text(state.recommendationRationale)
+                .font(.system(size: 11, design: .serif))
+                .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(ModelsInsetSurface(radius: 12))
+    }
+
+    /// The three things somebody actually wants to know before agreeing to a
+    /// multi-gigabyte download, in the space the card would otherwise leave
+    /// empty above its action.
+    private var facts: some View {
+        HStack(spacing: 8) {
+            ModelsFact(label: "DOWNLOAD", value: model.downloadSizeLabel)
+            ModelsFact(
+                label: "MEMORY",
+                value: model.minimumMemoryGB == 0
+                    ? "Any Mac"
+                    : "\(model.minimumMemoryGB) GB+"
+            )
+            ModelsFact(label: "NETWORK", value: "Once, then never")
+        }
+    }
+
+    @ViewBuilder
+    private var statusBlock: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            if let runtimeInstall = state.runtimeInstall, !state.localRuntimeAvailable {
+                ModelsDownloadTrack(download: runtimeInstall)
+            } else if state.installation == .downloading {
+                ModelsDownloadTrack(download: state.download)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                ModelsStatusDot(tone: badgeTone)
+                    .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
+                Text(errorMessage ?? ModelsLocalPresentation.statusDetail(for: state))
+                    .font(.system(size: 11, design: .serif))
+                    .foregroundStyle(
+                        errorMessage == nil
+                            ? Chamfer.Palette.pageTextSoft
+                            : Chamfer.Palette.danger
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var actionRow: some View {
+        HStack(spacing: 10) {
+            switch action {
+            case .alreadyActive:
+                // Not a disabled button. There is nothing here to press, and
+                // dimming a filled control to say so reads as something broken
+                // rather than as something finished.
+                ModelsStateMark(
+                    text: "In use for rewrites",
+                    symbol: "checkmark.circle.fill",
+                    tint: Chamfer.Palette.positive,
+                    fill: Chamfer.Palette.positiveSoft.opacity(0.78)
+                )
+            case .preparingRuntime:
+                ModelsStateMark(
+                    text: "Setting up Ollama…",
+                    symbol: nil,
+                    tint: Chamfer.Palette.brass,
+                    fill: Chamfer.Palette.brassSoft.opacity(0.85),
+                    showsSpinner: true
+                )
+            case .downloading:
+                // Work in progress is not a control either. The track above
+                // says how far along it is; this says what is happening.
+                ModelsStateMark(
+                    text: "Downloading…",
+                    symbol: nil,
+                    tint: Chamfer.Palette.brass,
+                    fill: Chamfer.Palette.brassSoft.opacity(0.85),
+                    showsSpinner: true
+                )
+            case .installRuntime, .download, .activate:
+                Button(action: onPrimaryAction) {
+                    HStack(spacing: 6) {
+                        Text(action.title)
+                        Image(systemName: action.symbol)
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                }
+                .buttonStyle(ModelsPrimaryButtonStyle())
+                .disabled(!ModelsLocalPresentation.isActionEnabled(for: state))
+                .accessibilityLabel(
+                    "\(action.title), \(model.displayName) \(model.parameterLabel)"
+                )
+            }
+            Spacer(minLength: 0)
+        }
     }
 }
 
-private struct ModelsZoneActionButton: View {
-    @State private var isHovered = false
+// MARK: - Configuration column
 
-    let backend: Backend
-    /// True while the morph has taken this button's place.
-    ///
-    /// Hiding the button also disables its hit testing, which makes SwiftUI
-    /// report the pointer as having left — so the button quietly animated
-    /// itself back to resting while it was invisible. The surface then handed
-    /// back to a button that no longer looked like what it had handed over
-    /// from, and the pointer's return animated it forwards again: a pop and a
-    /// settle, right as the sheet finished closing.
-    let retainsHover: Bool
-    let action: () -> Void
-    let onFrameChange: (CGRect) -> Void
+/// A state where the primary action would otherwise be a dead control.
+///
+/// A filled button dimmed to 40% says "broken", not "finished" or "working".
+/// This occupies the same place at the same height, so nothing shifts when the
+/// card moves between acting and having acted.
+private struct ModelsStateMark: View {
+    let text: String
+    var symbol: String?
+    let tint: Color
+    let fill: Color
+    var showsSpinner = false
 
-    private var showsHover: Bool { retainsHover || isHovered }
+    var body: some View {
+        HStack(spacing: 7) {
+            if showsSpinner {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.8)
+                    .frame(width: 13, height: 13)
+            } else if let symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            Text(text)
+                .font(.system(size: 12, weight: .semibold))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 15)
+        .frame(height: 38)
+        .background { Capsule().fill(fill) }
+        .overlay {
+            Capsule().strokeBorder(tint.opacity(0.22), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(text)
+    }
+}
 
-    private var presentation: ModelsZoneActionPresentation {
-        ModelsZoneActionResponse.presentation(
-            for: backend.backendID,
-            isHovered: showsHover
+private struct ModelsFact: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.system(size: 8, weight: .semibold))
+                .kerning(0.5)
+                .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.68))
+            Text(value)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Chamfer.Palette.pageText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(ModelsInsetSurface(radius: 11))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label): \(value)")
+    }
+}
+
+private struct ModelsConfigurationColumn: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var indicator
+    @LegacyState private var hoveredEffort: ModelEffort?
+
+    let effort: ModelEffort
+    let isRecessed: Bool
+    let onSelect: (ModelEffort) -> Void
+
+    private var presentation: ModelsSurfacePresentation {
+        ModelsSurfaceResponse.presentation(
+            for: .local,
+            isActive: false,
+            isHovered: false,
+            isRecessed: isRecessed
         )
     }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("CONFIGURATION")
+                .font(.system(size: 9, weight: .bold))
+                .kerning(1.1)
+                .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.78))
+                .padding(.bottom, 11)
+
+            VStack(spacing: 2) {
+                ForEach(ModelEffort.allCases) { candidate in
+                    ModelsEffortRow(
+                        effort: candidate,
+                        presentation: ModelsEffortSelectorResponse.presentation(
+                            for: candidate,
+                            selected: effort,
+                            hovered: hoveredEffort
+                        ),
+                        indicator: indicator,
+                        action: { onSelect(candidate) },
+                        onHoverChange: { hovering in
+                            withAnimation(Chamfer.Motion.quick) {
+                                if hovering {
+                                    hoveredEffort = candidate
+                                } else if hoveredEffort == candidate {
+                                    hoveredEffort = nil
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+            .padding(4)
+            .background(ModelsInsetSurface(radius: 14))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Model effort")
+
+            Divider()
+                .overlay(Chamfer.Palette.paperStroke.opacity(0.8))
+                .padding(.vertical, 12)
+
+            VStack(spacing: 8) {
+                ForEach(effort.profile.readouts) { readout in
+                    ModelsReadoutRow(readout: readout)
+                }
+            }
+
+            Spacer(minLength: 10)
+
+            Text(effort.profile.mechanics)
+                .font(.system(size: 9))
+                .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.72))
+                .lineSpacing(1)
+                .fixedSize(horizontal: false, vertical: true)
+                .contentTransition(.opacity)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 17)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(ModelsCardSurface(backend: .local, presentation: presentation))
+    }
+}
+
+private struct ModelsEffortRow: View {
+    let effort: ModelEffort
+    let presentation: ModelsEffortRowPresentation
+    let indicator: Namespace.ID
+    let action: () -> Void
+    let onHoverChange: (Bool) -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 5) {
-                Text(backend.actionTitle)
-                    // The label needs 91pt and `minWidth: 116` leaves it 88
-                    // after padding, so it silently wrapped onto two lines —
-                    // while the stand-in label the morph swaps in is
-                    // `lineLimit(1)`. The handover flipped between a one-line
-                    // and a two-line layout, which is the text appearing to
-                    // change size as the sheet opens and returns. Sizing to the
-                    // content lets the pill be as wide as its own words.
-                    .lineLimit(1)
-                    .fixedSize()
-                Image(systemName: backend.actionSymbol)
-                    .font(.system(size: 10, weight: .semibold))
-                    .offset(iconOffset)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(effort.title)
+                        .font(.system(size: 13, weight: presentation.isSelected ? .semibold : .medium))
+                        .foregroundStyle(
+                            (presentation.isSelected
+                                ? Chamfer.Palette.textOnInk
+                                : Chamfer.Palette.pageText)
+                                .opacity(presentation.titleOpacity)
+                        )
+                    Text(effort.tagline)
+                        .font(.system(size: 9.5, design: .serif))
+                        .foregroundStyle(
+                            (presentation.isSelected
+                                ? Chamfer.Palette.textOnInkSoft
+                                : Chamfer.Palette.pageTextSoft)
+                                .opacity(presentation.detailOpacity)
+                        )
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if presentation.isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Chamfer.Palette.textOnInk)
+                        .transition(.opacity)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background {
+                if presentation.isSelected {
+                    // One indicator that travels between rows rather than three
+                    // that fade in and out, so the selection is seen to move.
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Chamfer.Palette.ink)
+                        .matchedGeometryEffect(id: "effort", in: indicator)
+                }
             }
         }
-        .buttonStyle(
-            ModelsZonePillActionStyle(
-                tint: tint,
-                isHovered: showsHover,
-                presentation: presentation
-            )
-        )
-        .onGeometryChange(for: CGRect.self) { proxy in
-            proxy.frame(in: .named(ModelsLandscapeCoordinateSpace.name))
-        } action: { frame in
-            onFrameChange(frame)
-        }
-        .onHover { hovering in
-            // Ignored while the morph owns the button: the "exit" that arrives
-            // here is hit testing being switched off, not the pointer leaving.
-            guard !retainsHover else { return }
-            withAnimation(Chamfer.Motion.interactive) {
-                isHovered = hovering
-            }
-        }
-        .accessibilityLabel("\(backend.actionTitle), \(backend.name)")
-        .accessibilityHint("Opens \(backend.name.lowercased()) settings")
-    }
-
-    private var iconOffset: CGSize {
-        guard showsHover else { return .zero }
-        // One distance, travelled in the direction the arrow points. Apple's
-        // used to be 1.5 where the others were 2, so the same gesture read as a
-        // slightly smaller nudge on one pill than on its neighbours.
-        return switch backend.backendID {
-        case .apple: CGSize(width: 2, height: 0)
-        case .mlx: CGSize(width: 0, height: 2)
-        case .ollama: CGSize(width: 2, height: 0)
-        }
-    }
-
-    private var tint: Color {
-        let tint = ModelsBackendTintResponse.actionTint(
-            for: backend.backendID
-        )
-        return Color(red: tint.red, green: tint.green, blue: tint.blue)
+        .buttonStyle(.plain)
+        .onHover(perform: onHoverChange)
+        .accessibilityLabel("\(effort.title). \(effort.tagline)")
+        .accessibilityValue(presentation.isSelected ? "Selected" : "")
+        .accessibilityHint(effort.summary)
+        .accessibilityAddTraits(presentation.isSelected ? .isSelected : [])
     }
 }
 
-private struct ModelsZonePillActionStyle: ButtonStyle {
-    let tint: Color
-    let isHovered: Bool
-    let presentation: ModelsZoneActionPresentation
+private struct ModelsReadoutRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(
-                Chamfer.Palette.pageText.opacity(isHovered ? 0.96 : 0.88)
-            )
-            .padding(.horizontal, 14)
-            // No minimum width. While there was one, a short label was padded
-            // out to reach it and a long one was not, so the gap between the
-            // words and the pill's edge differed from pill to pill — and the
-            // longest label had no room at all and wrapped. Sizing to content
-            // gives every pill the same 14pt on both sides; they differ in
-            // width instead, which is the honest difference between them.
-            .frame(
-                minHeight: presentation.minimumHeight,
-                alignment: .center
-            )
-            .contentShape(Rectangle())
-            .background {
-                RoundedRectangle(
-                    cornerRadius: presentation.cornerRadius,
-                    style: .continuous
-                )
-                .fill(Chamfer.Palette.paper.opacity(presentation.paperOpacity))
-                .overlay {
-                    RoundedRectangle(
-                        cornerRadius: presentation.cornerRadius,
-                        style: .continuous
-                    )
-                    .fill(tint.opacity(presentation.fillOpacity))
+    let readout: ModelEffortReadout
+
+    private var fill: Color {
+        readout.axis.higherIsBetter
+            ? Chamfer.Palette.ink.opacity(0.72)
+            : Chamfer.Palette.brass.opacity(0.68)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(readout.axis.title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                Spacer(minLength: 4)
+                Text(readout.caption)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Chamfer.Palette.pageText.opacity(0.86))
+                    .contentTransition(.opacity)
+            }
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Chamfer.Palette.pageText.opacity(0.08))
+                    Capsule()
+                        .fill(fill)
+                        .frame(width: max(3, proxy.size.width * readout.level))
                 }
             }
+            .frame(height: 4)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(readout.axis.title): \(readout.caption)")
+    }
+}
+
+// MARK: - Cloud
+
+private struct ModelsCloudRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let state: ModelsDashboardState
+    let provider: CloudProvider?
+    let isHovered: Bool
+    let isRecessed: Bool
+    let onOpen: () -> Void
+    let onHoverChange: (Bool) -> Void
+
+    private var presentation: ModelsSurfacePresentation {
+        ModelsSurfaceResponse.presentation(
+            for: .cloud,
+            isActive: state.active == .cloud,
+            isHovered: isHovered,
+            isRecessed: isRecessed
+        )
+    }
+
+    private var actionTitle: String {
+        state.connection == .connected ? "Manage Provider" : "Connect Provider"
+    }
+
+    var body: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text("CLOUD  ·  OPTIONAL")
+                        .font(.system(size: 9, weight: .bold))
+                        .kerning(1.1)
+                        .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.72))
+                    ModelsStatusBadge(
+                        text: state.status(for: .cloud),
+                        tone: state.active == .cloud
+                            ? (state.connection == .connected ? .active : .danger)
+                            : (state.connection == .connected ? .ready : .quiet)
+                    )
+                }
+                Text("Cloud Model")
+                    .font(.system(size: 21, weight: .regular, design: .serif))
+                    .tracking(-0.5)
+                    .foregroundStyle(Chamfer.Palette.pageText)
+                Text(detail)
+                    .font(.system(size: 11, design: .serif))
+                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button(action: onOpen) {
+                HStack(spacing: 5) {
+                    Text(actionTitle)
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 9, weight: .semibold))
+                }
+            }
+            .buttonStyle(ModelsQuietButtonStyle())
+            .accessibilityHint("Opens cloud provider settings")
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background(ModelsCardSurface(backend: .cloud, presentation: presentation))
+        .offset(y: presentation.lift)
+        .animation(
+            Chamfer.Motion.reduce(.spring(duration: 0.24, bounce: 0), when: reduceMotion),
+            value: isHovered
+        )
+        .onHover(perform: onHoverChange)
+    }
+
+    private var detail: String {
+        if let provider, state.connection == .connected {
+            return "\(provider.displayName) connected. Notes leave this Mac when it runs."
+        }
+        return "A larger model than this Mac can hold, billed by your provider."
+    }
+}
+
+// MARK: - Shared surfaces
+
+private struct ModelsCardSurface: View {
+    let backend: ModelsBackendID
+    let presentation: ModelsSurfacePresentation
+
+    private var tint: Color {
+        let value = ModelsBackendTintResponse.tint(for: backend)
+        return Color(red: value.red, green: value.green, blue: value.blue)
+    }
+
+    private var secondary: Color {
+        let value = ModelsBackendTintResponse.secondaryTint(for: backend)
+        return Color(red: value.red, green: value.green, blue: value.blue)
+    }
+
+    private var radius: CGFloat { backend == .local ? 22 : 18 }
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(Chamfer.Palette.paper.opacity(presentation.paperOpacity))
             .overlay {
-                RoundedRectangle(
-                    cornerRadius: presentation.cornerRadius,
-                    style: .continuous
-                )
-                .strokeBorder(
-                    tint.opacity(presentation.borderOpacity),
-                    lineWidth: 1
-                )
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                tint.opacity(presentation.tintOpacity),
+                                secondary.opacity(presentation.secondaryTintOpacity),
+                                tint.opacity(0)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(
+                        tint.opacity(presentation.borderOpacity),
+                        lineWidth: 1
+                    )
             }
             .shadow(
                 color: tint.opacity(presentation.shadowOpacity),
-                radius: isHovered ? 8 : 4,
-                y: isHovered ? 4 : 2
+                radius: presentation.shadowRadius,
+                y: presentation.shadowY
             )
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .opacity(configuration.isPressed ? 0.84 : 1)
-            .animation(Chamfer.Motion.interactive, value: isHovered)
-            .animation(Chamfer.Motion.quick, value: configuration.isPressed)
+            .shadow(
+                color: Color(red: 0.31, green: 0.21, blue: 0.10)
+                    .opacity(presentation.shadowOpacity * 0.5),
+                radius: 8,
+                y: 4
+            )
     }
 }
+
+struct ModelsInsetSurface: View {
+    let radius: CGFloat
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(Chamfer.Palette.canvas.opacity(0.50))
+            .overlay {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(
+                        Chamfer.Palette.paperStroke.opacity(0.72),
+                        lineWidth: 1
+                    )
+            }
+    }
+}
+
+struct ModelsStatusBadge: View {
+    enum Tone {
+        case active
+        case ready
+        case working
+        case quiet
+        case danger
+
+        var color: Color {
+            switch self {
+            case .active, .ready: Chamfer.Palette.positive
+            case .working: Chamfer.Palette.brass
+            case .quiet: Chamfer.Palette.pageTextSoft
+            case .danger: Chamfer.Palette.danger
+            }
+        }
+
+        var showsFill: Bool {
+            switch self {
+            case .active: true
+            case .ready, .working, .quiet, .danger: false
+            }
+        }
+    }
+
+    let text: String
+    let tone: Tone
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ModelsStatusDot(tone: tone)
+            Text(text)
+                .font(.system(size: 9, weight: .bold))
+                .kerning(0.9)
+        }
+        .foregroundStyle(
+            tone == .quiet
+                ? Chamfer.Palette.pageTextSoft.opacity(0.82)
+                : tone.color
+        )
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background {
+            if tone.showsFill {
+                Capsule().fill(Chamfer.Palette.positiveSoft.opacity(0.72))
+            } else {
+                Capsule().fill(Chamfer.Palette.canvasDeep.opacity(0.55))
+            }
+        }
+        .fixedSize()
+    }
+}
+
+struct ModelsStatusDot: View {
+    let tone: ModelsStatusBadge.Tone
+
+    var body: some View {
+        Circle()
+            .fill(tone.color)
+            .frame(width: 6, height: 6)
+            .accessibilityHidden(true)
+    }
+}
+
+/// The download's own progress, determinate when the runtime has told us a
+/// total and honestly indeterminate when it has not.
+private struct ModelsDownloadTrack: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let download: ModelsDownloadState?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Chamfer.Palette.pageText.opacity(0.09))
+                    if let fraction = download?.fraction {
+                        Capsule()
+                            .fill(Chamfer.Palette.ink.opacity(0.78))
+                            .frame(width: max(4, proxy.size.width * fraction))
+                    } else {
+                        // No total yet. A bar pretending to know how far along
+                        // it is would be a lie; a quiet sweep says "working".
+                        ModelsIndeterminateSweep(width: proxy.size.width)
+                    }
+                }
+            }
+            .frame(height: 5)
+            .clipShape(Capsule())
+
+            if let fraction = download?.fraction {
+                Text("\(Int(fraction * 100))%")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                    .contentTransition(.numericText())
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Download progress")
+        .accessibilityValue(
+            download?.fraction.map { "\(Int($0 * 100)) percent" } ?? "Starting"
+        )
+    }
+}
+
+private struct ModelsIndeterminateSweep: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @LegacyState private var advanced = false
+
+    let width: CGFloat
+
+    var body: some View {
+        Capsule()
+            .fill(Chamfer.Palette.ink.opacity(0.55))
+            .frame(width: max(24, width * 0.32))
+            .offset(x: advanced ? max(0, width * 0.68) : 0)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(
+                    .easeInOut(duration: 1.1).repeatForever(autoreverses: true)
+                ) {
+                    advanced = true
+                }
+            }
+    }
+}
+
+// MARK: - Buttons
+
+private struct ModelsPrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        StyledLabel(configuration: configuration)
+    }
+
+    private struct StyledLabel: View {
+        @Environment(\.isEnabled) private var isEnabled
+        let configuration: ModelsPrimaryButtonStyle.Configuration
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Chamfer.Palette.paper)
+                .padding(.horizontal, 18)
+                .frame(height: 38)
+                .background(Chamfer.Palette.ink)
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .contentShape(Rectangle())
+                .scaleEffect(configuration.isPressed ? 0.975 : 1)
+                .opacity(isEnabled ? (configuration.isPressed ? 0.84 : 1) : 0.42)
+                .animation(Chamfer.Motion.quick, value: configuration.isPressed)
+                .animation(Chamfer.Motion.quick, value: isEnabled)
+        }
+    }
+}
+
+private struct ModelsQuietButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        StyledLabel(configuration: configuration)
+    }
+
+    private struct StyledLabel: View {
+        @Environment(\.isEnabled) private var isEnabled
+        @LegacyState private var isHovered = false
+        let configuration: ModelsQuietButtonStyle.Configuration
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Chamfer.Palette.pageText.opacity(isHovered ? 0.98 : 0.88))
+                .padding(.horizontal, 14)
+                .frame(height: 34)
+                .background {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Chamfer.Palette.paper.opacity(isHovered ? 0.86 : 0.68))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(
+                            Chamfer.Palette.barStroke.opacity(isHovered ? 0.9 : 0.7),
+                            lineWidth: 1
+                        )
+                }
+                .contentShape(Rectangle())
+                .scaleEffect(configuration.isPressed ? 0.975 : 1)
+                .opacity(isEnabled ? (configuration.isPressed ? 0.84 : 1) : 0.45)
+                .onHover { hovering in
+                    withAnimation(Chamfer.Motion.interactive) { isHovered = hovering }
+                }
+                .animation(Chamfer.Motion.quick, value: configuration.isPressed)
+        }
+    }
+}
+
+// MARK: - Ambient field
 
 private struct ModelsAmbientField: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    let active: ModelsBackendID
-    let selected: ModelsBackendID
+    let active: ModelsBackendID?
     let hovered: ModelsBackendID?
-    let transitionProgress: CGFloat
+    let recessed: Bool
     let size: CGSize
 
     var body: some View {
         ZStack {
-            ModelsBloom(
-                color: Color(red: 0.74, green: 0.86, blue: 0.78),
-                center: CGPoint(x: 0.05, y: 0.37),
-                size: CGSize(width: 0.66, height: 0.54),
-                inwardOffset: CGSize(width: 0.08, height: 0.03),
-                intensity: 1.15,
-                backend: .apple,
-                active: active,
-                selected: selected,
-                hovered: hovered,
-                transitionProgress: transitionProgress,
-                canvas: size
-            )
-            ModelsBloom(
-                color: Color(red: 0.96, green: 0.86, blue: 0.51),
-                center: CGPoint(x: 0.35, y: 0.10),
-                size: CGSize(width: 0.54, height: 0.46),
-                inwardOffset: CGSize(width: 0.04, height: 0.05),
-                intensity: 1.22,
-                backend: .apple,
-                active: active,
-                selected: selected,
-                hovered: hovered,
-                transitionProgress: transitionProgress,
-                canvas: size
-            )
+            // Local owns the top two-thirds of the page in atmosphere as well
+            // as in layout, which is the hierarchy stated before a word is read.
             ModelsBloom(
                 color: Color(red: 0.72, green: 0.66, blue: 0.87),
-                center: CGPoint(x: 0.95, y: 0.38),
-                size: CGSize(width: 0.64, height: 0.54),
-                inwardOffset: CGSize(width: -0.08, height: 0.03),
-                intensity: 1.15,
-                backend: .mlx,
+                center: CGPoint(x: 0.06, y: 0.30),
+                size: CGSize(width: 0.72, height: 0.62),
+                inwardOffset: CGSize(width: 0.07, height: 0.03),
+                intensity: 1.18,
+                backend: .local,
                 active: active,
-                selected: selected,
                 hovered: hovered,
-                transitionProgress: transitionProgress,
+                recessed: recessed,
                 canvas: size
             )
             ModelsBloom(
                 color: Color(red: 0.93, green: 0.66, blue: 0.43),
-                center: CGPoint(x: 0.70, y: 0.09),
-                size: CGSize(width: 0.52, height: 0.46),
-                inwardOffset: CGSize(width: -0.04, height: 0.05),
-                intensity: 1.18,
-                backend: .mlx,
+                center: CGPoint(x: 0.86, y: 0.10),
+                size: CGSize(width: 0.60, height: 0.52),
+                inwardOffset: CGSize(width: -0.05, height: 0.05),
+                intensity: 1.14,
+                backend: .local,
                 active: active,
-                selected: selected,
                 hovered: hovered,
-                transitionProgress: transitionProgress,
+                recessed: recessed,
                 canvas: size
             )
             ModelsBloom(
-                color: Color(red: 0.94, green: 0.60, blue: 0.51),
-                center: CGPoint(x: 0.34, y: 0.94),
-                size: CGSize(width: 0.68, height: 0.54),
-                inwardOffset: CGSize(width: 0.03, height: -0.08),
-                intensity: 1.15,
-                backend: .ollama,
+                color: Color(red: 0.96, green: 0.86, blue: 0.51),
+                center: CGPoint(x: 0.40, y: 0.02),
+                size: CGSize(width: 0.52, height: 0.42),
+                inwardOffset: CGSize(width: 0.02, height: 0.05),
+                intensity: 1.10,
+                backend: .local,
                 active: active,
-                selected: selected,
                 hovered: hovered,
-                transitionProgress: transitionProgress,
+                recessed: recessed,
                 canvas: size
             )
             ModelsBloom(
                 color: Color(red: 0.94, green: 0.67, blue: 0.78),
-                center: CGPoint(x: 0.72, y: 0.91),
-                size: CGSize(width: 0.62, height: 0.55),
-                inwardOffset: CGSize(width: -0.03, height: -0.08),
-                intensity: 1.20,
-                backend: .ollama,
+                center: CGPoint(x: 0.78, y: 0.97),
+                size: CGSize(width: 0.62, height: 0.44),
+                inwardOffset: CGSize(width: -0.04, height: -0.07),
+                intensity: 1.12,
+                backend: .cloud,
                 active: active,
-                selected: selected,
                 hovered: hovered,
-                transitionProgress: transitionProgress,
+                recessed: recessed,
+                canvas: size
+            )
+            ModelsBloom(
+                color: Color(red: 0.94, green: 0.60, blue: 0.51),
+                center: CGPoint(x: 0.22, y: 1.00),
+                size: CGSize(width: 0.58, height: 0.40),
+                inwardOffset: CGSize(width: 0.03, height: -0.07),
+                intensity: 1.08,
+                backend: .cloud,
+                active: active,
+                hovered: hovered,
+                recessed: recessed,
                 canvas: size
             )
         }
@@ -1109,11 +1386,12 @@ private struct ModelsAmbientField: View {
         .allowsHitTesting(false)
         .accessibilityHidden(true)
         .animation(
-            Chamfer.Motion.reduce(
-                .easeInOut(duration: 0.46),
-                when: reduceMotion
-            ),
+            Chamfer.Motion.reduce(.easeInOut(duration: 0.46), when: reduceMotion),
             value: hovered
+        )
+        .animation(
+            Chamfer.Motion.reduce(.easeInOut(duration: 0.30), when: reduceMotion),
+            value: recessed
         )
     }
 }
@@ -1125,19 +1403,17 @@ private struct ModelsBloom: View {
     let inwardOffset: CGSize
     let intensity: Double
     let backend: ModelsBackendID
-    let active: ModelsBackendID
-    let selected: ModelsBackendID
+    let active: ModelsBackendID?
     let hovered: ModelsBackendID?
-    let transitionProgress: CGFloat
+    let recessed: Bool
     let canvas: CGSize
 
     private var presentation: ModelsBloomPresentation {
-        ModelsBloomResponse.transitionPresentation(
+        ModelsBloomResponse.presentation(
             for: backend,
             active: active,
-            selected: selected,
             hovered: hovered,
-            progress: transitionProgress
+            recessed: recessed
         )
     }
 

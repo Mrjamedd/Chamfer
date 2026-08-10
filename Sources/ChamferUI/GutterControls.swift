@@ -1,11 +1,21 @@
 import SwiftUI
 
+enum DashboardNoteHistoryControlVisibility {
+    static func shouldShow(
+        showingNotes: Bool,
+        showingHome: Bool,
+        hasOpenNote: Bool
+    ) -> Bool {
+        showingNotes && !showingHome && hasOpenNote
+    }
+}
+
 /// The gutter's third control: the app's own defaults.
 ///
 /// Shaped exactly like `FloatingCloseButton`, because the gutter has one
 /// vocabulary and a control that invented a second one would read as having
 /// arrived from somewhere else. It sits at the leading edge, mirroring
-/// `FloatingVersionsButton` at the trailing one, with close held in the middle
+/// `FloatingHistoryButton` at the trailing one, with close held in the middle
 /// where it has always been — so neither of the two controls added since
 /// moves the one the hand already knows.
 ///
@@ -13,7 +23,7 @@ import SwiftUI
 /// not on the page: the gutter is where you reach when you want something done
 /// *to* what you are looking at rather than *in* it.
 public struct FloatingSettingsButton: View {
-    @State private var isHovered = false
+    @LegacyState private var isHovered = false
 
     private let action: () -> Void
     private let onHover: (Bool) -> Void

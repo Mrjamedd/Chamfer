@@ -74,32 +74,6 @@ public enum RewriteFailure: Sendable, Equatable, Hashable, Codable {
     }
 }
 
-/// A model that was used because the chosen one could not be.
-///
-/// Recorded rather than inferred: the scope requires fallback to be visible
-/// after the fact, including when it moved processing off the device.
-public struct FallbackRecord: Sendable, Equatable, Hashable, Codable {
-    public let requestedModel: String
-    public let usedModel: String
-    public let reason: RewriteFailure
-    /// True when the fallback sent note contents off the device. Carried
-    /// explicitly so history can be honest about it without having to know
-    /// what every model identifier means.
-    public let leftDevice: Bool
-
-    public init(
-        requestedModel: String,
-        usedModel: String,
-        reason: RewriteFailure,
-        leftDevice: Bool
-    ) {
-        self.requestedModel = requestedModel
-        self.usedModel = usedModel
-        self.reason = reason
-        self.leftDevice = leftDevice
-    }
-}
-
 // MARK: - Entry
 
 /// One rewrite that reached a conclusion, kept forever.
@@ -108,8 +82,8 @@ public struct FallbackRecord: Sendable, Equatable, Hashable, Codable {
 /// only be replayed against the exact bytes it was made from, and the one
 /// moment this record has to work is the moment the file on disk is *not*
 /// what it was. Restoring must never depend on the thing being restored.
-public struct HistoryEntry: Sendable, Identifiable, Equatable {
-    public enum Outcome: Sendable, Equatable {
+public struct HistoryEntry: Sendable, Identifiable, Equatable, Codable {
+    public enum Outcome: Sendable, Equatable, Codable {
         case applied
         case failed(RewriteFailure)
         /// Applied, then undone by the user.
@@ -142,8 +116,10 @@ public struct HistoryEntry: Sendable, Identifiable, Equatable {
     /// The source had changed since the rewrite was generated, and the user
     /// approved it anyway.
     public let sourceWasOutdated: Bool
-    public let fallback: FallbackRecord?
     public let retryCount: Int
+    /// Non-empty for the deterministic cleanup pass. These entries represent
+    /// a real snapshotted write, but no model was involved.
+    public let ruleIDs: [String]
     public let outcome: Outcome
 
     public init(
@@ -158,8 +134,8 @@ public struct HistoryEntry: Sendable, Identifiable, Equatable {
         appliedText: String,
         application: RewriteApplication,
         sourceWasOutdated: Bool = false,
-        fallback: FallbackRecord? = nil,
         retryCount: Int = 0,
+        ruleIDs: [String] = [],
         outcome: Outcome = .applied
     ) {
         self.id = id
@@ -173,9 +149,51 @@ public struct HistoryEntry: Sendable, Identifiable, Equatable {
         self.appliedText = appliedText
         self.application = application
         self.sourceWasOutdated = sourceWasOutdated
-        self.fallback = fallback
         self.retryCount = retryCount
+        self.ruleIDs = ruleIDs
         self.outcome = outcome
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, note, path, vaultID, occurredAt, mode, modelID
+        case previousText, appliedText, application, sourceWasOutdated
+        case retryCount, ruleIDs, outcome
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        note = try values.decode(NoteSummary.self, forKey: .note)
+        path = try values.decode(URL.self, forKey: .path)
+        vaultID = try values.decodeIfPresent(UUID.self, forKey: .vaultID)
+        occurredAt = try values.decode(Date.self, forKey: .occurredAt)
+        mode = try values.decode(RewriteMode.self, forKey: .mode)
+        modelID = try values.decode(String.self, forKey: .modelID)
+        previousText = try values.decode(String.self, forKey: .previousText)
+        appliedText = try values.decode(String.self, forKey: .appliedText)
+        application = try values.decode(RewriteApplication.self, forKey: .application)
+        sourceWasOutdated = try values.decode(Bool.self, forKey: .sourceWasOutdated)
+        retryCount = try values.decode(Int.self, forKey: .retryCount)
+        ruleIDs = try values.decodeIfPresent([String].self, forKey: .ruleIDs) ?? []
+        outcome = try values.decode(Outcome.self, forKey: .outcome)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(note, forKey: .note)
+        try values.encode(path, forKey: .path)
+        try values.encodeIfPresent(vaultID, forKey: .vaultID)
+        try values.encode(occurredAt, forKey: .occurredAt)
+        try values.encode(mode, forKey: .mode)
+        try values.encode(modelID, forKey: .modelID)
+        try values.encode(previousText, forKey: .previousText)
+        try values.encode(appliedText, forKey: .appliedText)
+        try values.encode(application, forKey: .application)
+        try values.encode(sourceWasOutdated, forKey: .sourceWasOutdated)
+        try values.encode(retryCount, forKey: .retryCount)
+        if !ruleIDs.isEmpty { try values.encode(ruleIDs, forKey: .ruleIDs) }
+        try values.encode(outcome, forKey: .outcome)
     }
 
     /// Only an applied rewrite that has not already been undone can be undone.
@@ -185,8 +203,11 @@ public struct HistoryEntry: Sendable, Identifiable, Equatable {
     /// Reads as a sentence rather than a row of pills, because most entries
     /// are unremarkable and should not shout.
     public func summary(since reference: Date) -> String {
+        if !ruleIDs.isEmpty {
+            let count = ruleIDs.count
+            return "Rules · \(count) repair\(count == 1 ? "" : "s") · automatic"
+        }
         var parts = [mode.title, modelID]
-        if fallback != nil { parts.append("fallback") }
         if sourceWasOutdated { parts.append("outdated source") }
         if retryCount > 0 { parts.append("retried \(retryCount)×") }
         parts.append(application == .automatic ? "automatic" : "approved")
@@ -222,7 +243,8 @@ public enum HistoryWindow {
         at url: URL,
         in entries: [HistoryEntry]
     ) -> [HistoryEntry] {
-        sorted(entries.filter { $0.path == url })
+        let key = url.standardizedFileURL
+        return sorted(entries.filter { $0.path.standardizedFileURL == key })
     }
 
     /// True when there is more stored than the standard view is showing, which

@@ -58,9 +58,8 @@ public enum RewriteMode: String, Sendable, Codable, CaseIterable, Identifiable {
 
 /// Whether a finished rewrite lands on disk or waits to be judged.
 ///
-/// `review` is the default everywhere, and nothing may promote itself to
-/// `automatic`: the scope requires the user to have said so for the exact
-/// vault or folder in question.
+/// Neither case is a default. A vault stores nil until the user explicitly
+/// chooses one, and nothing may promote itself to `automatic`.
 public enum RewriteApplication: String, Sendable, Codable, CaseIterable, Identifiable {
     case review
     case automatic
@@ -82,13 +81,34 @@ public enum RewriteApplication: String, Sendable, Codable, CaseIterable, Identif
     }
 }
 
+/// The final destination after the user's application choice and the
+/// deterministic safety recommendation are considered together.
+public enum RewriteApplicationDecision: Sendable, Equatable {
+    case queueForReview(automaticReason: RewriteReviewRecommendation?)
+    case applyAutomatically
+
+    public static func decide(
+        requested: RewriteApplication,
+        recommendation: RewriteReviewRecommendation?
+    ) -> RewriteApplicationDecision {
+        switch (requested, recommendation) {
+        case (.review, _):
+            .queueForReview(automaticReason: nil)
+        case let (.automatic, reason?):
+            .queueForReview(automaticReason: reason)
+        case (.automatic, nil):
+            .applyAutomatically
+        }
+    }
+}
+
 // MARK: - Preservation
 
 /// The Markdown structures a rewrite may not disturb.
 ///
 /// An option set rather than a struct of booleans because the interesting
-/// operations are set operations: what a folder adds to its vault's
-/// protections, and which of them a failed rewrite reports as violated.
+/// operations are set operations: which structures a vault protects and which
+/// of them a failed rewrite reports as violated.
 public struct MarkdownStructure: OptionSet, Sendable, Hashable, Codable {
     public let rawValue: Int
 
@@ -111,12 +131,13 @@ public struct MarkdownStructure: OptionSet, Sendable, Hashable, Codable {
         .codeBlocks, .frontMatter, .taskCheckboxes, .metadata
     ]
 
-    /// What is protected before the user changes anything.
+    /// The named non-prose preset offered by an explicit button in the vault
+    /// editor. A fresh vault still stores nil; this value is never selected on
+    /// the user's behalf.
     ///
     /// Not `all`: formatting mode exists to reflow headings and lists, so
     /// protecting those by default would make one of the five modes a no-op.
-    /// What is on by default is everything a rewrite has no business editing —
-    /// the parts that are addresses and payloads rather than prose.
+    /// It protects parts that are addresses and payloads rather than prose.
     public static let standard: MarkdownStructure = [
         .links, .images, .embeds, .codeBlocks, .frontMatter, .taskCheckboxes, .metadata
     ]
@@ -168,47 +189,208 @@ public enum SweepSchedule: Sendable, Codable, Equatable, Hashable {
     }
 }
 
+// MARK: - Run trigger
+
+/// The single event that starts work for a vault.
+///
+/// These are alternatives, never two timers layered together. An inactivity
+/// vault reacts to an edited note after it has gone quiet. A scheduled vault
+/// ignores edit-settling events and processes its eligible notes only when its
+/// recurring sweep is due.
+public enum VaultRunTrigger: String, Sendable, Codable, CaseIterable, Identifiable {
+    case inactivity
+    case schedule
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .inactivity: "After inactivity"
+        case .schedule: "On a schedule"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .inactivity:
+            "Run an edited note once after it has stayed quiet. No scheduled sweep runs."
+        case .schedule:
+            "Sweep eligible notes at the chosen interval. Edits do not start an inactivity timer."
+        }
+    }
+}
+
 // MARK: - Policy
+
+/// The choices a person has made for one vault.
+///
+/// Every field is optional on purpose. A connected vault may be configured a
+/// row at a time and that partial intent has to survive a relaunch without the
+/// rest of the rows quietly acquiring values. Only `resolve(modelID:)` may
+/// turn this into something the processor can use, and it refuses until every
+/// required vault choice and the app-wide model choice exist.
+public struct VaultConfiguration: Sendable, Equatable, Codable {
+    public var mode: RewriteMode?
+    public var application: RewriteApplication?
+    public var runTrigger: VaultRunTrigger?
+    public var inactivityDelay: TimeInterval?
+    public var sweep: SweepSchedule?
+    public var preserved: MarkdownStructure?
+
+    public init(
+        mode: RewriteMode? = nil,
+        application: RewriteApplication? = nil,
+        runTrigger: VaultRunTrigger? = nil,
+        inactivityDelay: TimeInterval? = nil,
+        sweep: SweepSchedule? = nil,
+        preserved: MarkdownStructure? = nil
+    ) {
+        self.mode = mode
+        self.application = application
+        self.runTrigger = runTrigger
+        self.inactivityDelay = inactivityDelay
+        self.sweep = sweep
+        self.preserved = preserved
+    }
+
+    /// Migration bridge for state written before partial configuration was
+    /// representable. Every legacy policy was complete by construction.
+    public init(resolved policy: RewritePolicy) {
+        mode = policy.mode
+        application = policy.application
+        runTrigger = policy.runTrigger
+        inactivityDelay = policy.inactivityDelay
+        sweep = policy.sweep
+        preserved = policy.preserved
+    }
+
+    /// Missing in the same order as the editor presents the rows.
+    public var missingFields: [PolicyField] {
+        var fields: [PolicyField] = []
+        if mode == nil { fields.append(.mode) }
+        if application == nil { fields.append(.application) }
+        switch runTrigger {
+        case nil:
+            fields.append(.runTrigger)
+        case .inactivity:
+            if inactivityDelay == nil { fields.append(.inactivityDelay) }
+        case .schedule:
+            if sweep == nil || sweep == .never { fields.append(.sweep) }
+        }
+        if preserved == nil { fields.append(.preserved) }
+        return fields
+    }
+
+    public var isComplete: Bool { missingFields.isEmpty }
+
+    public func resolve(modelID: String?) -> RewritePolicy? {
+        guard let mode,
+              let application,
+              let runTrigger,
+              let preserved,
+              let modelID,
+              !modelID.isEmpty
+        else { return nil }
+
+        let resolvedDelay: TimeInterval
+        let resolvedSweep: SweepSchedule
+        switch runTrigger {
+        case .inactivity:
+            guard let inactivityDelay else { return nil }
+            resolvedDelay = inactivityDelay
+            resolvedSweep = .never
+        case .schedule:
+            guard let sweep, sweep != .never else { return nil }
+            resolvedDelay = 0
+            resolvedSweep = sweep
+        }
+
+        return RewritePolicy(
+            mode: mode,
+            application: application,
+            runTrigger: runTrigger,
+            inactivityDelay: resolvedDelay,
+            sweep: resolvedSweep,
+            preserved: preserved,
+            modelID: modelID
+        )
+    }
+}
 
 /// Everything that decides how one note gets rewritten, with no gaps.
 ///
-/// This is the resolved shape — what the processor is handed after global,
-/// vault and folder settings have been layered. Every field has a value, so
-/// nothing downstream has to decide what a missing setting means.
+/// This is the resolved shape handed to the processor. Every field has a
+/// value, so nothing downstream decides what a missing setting means.
 public struct RewritePolicy: Sendable, Equatable, Codable {
     public var mode: RewriteMode
     public var application: RewriteApplication
+    public var runTrigger: VaultRunTrigger
     /// How long a note must go unchanged before it is eligible.
     public var inactivityDelay: TimeInterval
     public var sweep: SweepSchedule
     public var preserved: MarkdownStructure
     /// Identifier of the chosen model, as `ChamferRewrite` names them.
     public var modelID: String
-    /// Tried only when the chosen model fails, and only when set.
-    public var fallbackModelID: String?
+
+    /// What a vault stores for "the model on this Mac".
+    ///
+    /// Deliberately not a model name. Which local model Chamfer downloads is
+    /// decided by the hardware, so a policy naming one would go stale the
+    /// moment the vault opened on a different Mac — and a stale name means a
+    /// second multi-gigabyte download of a model nobody chose. `ChamferRewrite`
+    /// resolves this to the device's own recommendation.
+    public static let localModelIdentifier = "local.ollama"
 
     public init(
-        mode: RewriteMode = .fullCleanup,
-        application: RewriteApplication = .review,
-        inactivityDelay: TimeInterval = 600,
-        sweep: SweepSchedule = .never,
-        preserved: MarkdownStructure = .standard,
-        modelID: String = "apple.foundation",
-        fallbackModelID: String? = nil
+        mode: RewriteMode,
+        application: RewriteApplication,
+        runTrigger: VaultRunTrigger? = nil,
+        inactivityDelay: TimeInterval,
+        sweep: SweepSchedule,
+        preserved: MarkdownStructure,
+        modelID: String
     ) {
         self.mode = mode
         self.application = application
+        self.runTrigger = runTrigger ?? (sweep == .never ? .inactivity : .schedule)
         self.inactivityDelay = inactivityDelay
         self.sweep = sweep
         self.preserved = preserved
         self.modelID = modelID
-        self.fallbackModelID = fallbackModelID
     }
 
-    /// What a fresh install does: full cleanup, queued for review, ten minutes
-    /// after you stop typing. Review rather than automatic is the important
-    /// half — nothing writes to a note until the user has asked it to.
-    public static let standard = RewritePolicy()
+    private enum CodingKeys: String, CodingKey {
+        case mode
+        case application
+        case runTrigger
+        case inactivityDelay
+        case sweep
+        case preserved
+        case modelID
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try values.decode(RewriteMode.self, forKey: .mode)
+        application = try values.decode(RewriteApplication.self, forKey: .application)
+        inactivityDelay = try values.decode(TimeInterval.self, forKey: .inactivityDelay)
+        sweep = try values.decode(SweepSchedule.self, forKey: .sweep)
+        runTrigger = try values.decodeIfPresent(VaultRunTrigger.self, forKey: .runTrigger)
+            ?? (sweep == .never ? .inactivity : .schedule)
+        preserved = try values.decode(MarkdownStructure.self, forKey: .preserved)
+        modelID = try values.decode(String.self, forKey: .modelID)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(mode, forKey: .mode)
+        try values.encode(application, forKey: .application)
+        try values.encode(runTrigger, forKey: .runTrigger)
+        try values.encode(inactivityDelay, forKey: .inactivityDelay)
+        try values.encode(sweep, forKey: .sweep)
+        try values.encode(preserved, forKey: .preserved)
+        try values.encode(modelID, forKey: .modelID)
+    }
 
     public var inactivityMinutes: Int {
         max(1, Int((inactivityDelay / 60).rounded()))
@@ -217,18 +399,18 @@ public struct RewritePolicy: Sendable, Equatable, Codable {
 
 /// One setting a policy is made of.
 ///
-/// Exists so the interface can say *which* settings a vault has taken into its
-/// own hands, and show only those. Without it the Vaults page would have to
-/// render the entire policy at every level and let the user hunt for the
-/// differences.
+/// Kept only as a source of titles for the rows that edit them. The override
+/// machinery that used to live here — `PolicyOverride`, `PolicyResolver`,
+/// `ResolvedPolicy` — is gone with the hierarchy it served: a vault now holds
+/// a complete policy or none at all, so there is nothing left to resolve.
 public enum PolicyField: String, Sendable, CaseIterable, Identifiable, Codable {
     case mode
     case application
+    case runTrigger
     case inactivityDelay
     case sweep
     case preserved
     case model
-    case fallbackModel
 
     public var id: String { rawValue }
 
@@ -236,172 +418,11 @@ public enum PolicyField: String, Sendable, CaseIterable, Identifiable, Codable {
         switch self {
         case .mode: "Rewrite mode"
         case .application: "Applying rewrites"
+        case .runTrigger: "When it runs"
         case .inactivityDelay: "Inactivity delay"
         case .sweep: "Schedule"
         case .preserved: "Markdown preservation"
         case .model: "Model"
-        case .fallbackModel: "Fallback model"
         }
-    }
-}
-
-/// A partial policy. Every field is optional, and `nil` means "inherit".
-///
-/// Vaults and folders hold one of these rather than a whole policy, so a
-/// setting changed globally reaches everything that has not deliberately
-/// broken away from it.
-public struct PolicyOverride: Sendable, Equatable, Codable {
-    public var mode: RewriteMode?
-    public var application: RewriteApplication?
-    public var inactivityDelay: TimeInterval?
-    public var sweep: SweepSchedule?
-    public var preserved: MarkdownStructure?
-    public var modelID: String?
-    /// Double-optional: the outer says whether this level has an opinion, the
-    /// inner says whether that opinion is "no fallback at all". Collapsing
-    /// them would make turning a fallback off indistinguishable from
-    /// inheriting one.
-    public var fallbackModelID: String??
-
-    public init(
-        mode: RewriteMode? = nil,
-        application: RewriteApplication? = nil,
-        inactivityDelay: TimeInterval? = nil,
-        sweep: SweepSchedule? = nil,
-        preserved: MarkdownStructure? = nil,
-        modelID: String? = nil,
-        fallbackModelID: String?? = nil
-    ) {
-        self.mode = mode
-        self.application = application
-        self.inactivityDelay = inactivityDelay
-        self.sweep = sweep
-        self.preserved = preserved
-        self.modelID = modelID
-        self.fallbackModelID = fallbackModelID
-    }
-
-    public static let inherited = PolicyOverride()
-
-    /// Which settings this level has an opinion about.
-    public var fields: Set<PolicyField> {
-        var fields: Set<PolicyField> = []
-        if mode != nil { fields.insert(.mode) }
-        if application != nil { fields.insert(.application) }
-        if inactivityDelay != nil { fields.insert(.inactivityDelay) }
-        if sweep != nil { fields.insert(.sweep) }
-        if preserved != nil { fields.insert(.preserved) }
-        if modelID != nil { fields.insert(.model) }
-        if fallbackModelID != nil { fields.insert(.fallbackModel) }
-        return fields
-    }
-
-    public var isInherited: Bool { fields.isEmpty }
-
-    /// Drops this level's opinion about one setting, so it inherits again.
-    public mutating func clear(_ field: PolicyField) {
-        switch field {
-        case .mode: mode = nil
-        case .application: application = nil
-        case .inactivityDelay: inactivityDelay = nil
-        case .sweep: sweep = nil
-        case .preserved: preserved = nil
-        case .model: modelID = nil
-        case .fallbackModel: fallbackModelID = nil
-        }
-    }
-}
-
-// MARK: - Resolution
-
-/// A policy plus the story of where each of its settings came from.
-public struct ResolvedPolicy: Sendable, Equatable {
-    public enum Source: String, Sendable, Equatable {
-        case global
-        case vault
-        case folder
-
-        public var title: String {
-            switch self {
-            case .global: "your defaults"
-            case .vault: "this vault"
-            case .folder: "this folder"
-            }
-        }
-    }
-
-    public let policy: RewritePolicy
-    /// Where each field's winning value was set. Fields resolved from global
-    /// defaults are present too, so this is always complete.
-    public let sources: [PolicyField: Source]
-
-    public init(policy: RewritePolicy, sources: [PolicyField: Source]) {
-        self.policy = policy
-        self.sources = sources
-    }
-
-    public func source(of field: PolicyField) -> Source {
-        sources[field] ?? .global
-    }
-
-    /// The fields that are not simply inherited from global defaults — what
-    /// the Vaults page shows before you ask to see everything.
-    public var overriddenFields: [PolicyField] {
-        PolicyField.allCases.filter { source(of: $0) != .global }
-    }
-}
-
-/// Layers global defaults, a vault's override and a folder's override into one
-/// complete policy. More specific always wins.
-public enum PolicyResolver {
-    public static func resolve(
-        global: RewritePolicy,
-        vault: PolicyOverride = .inherited,
-        folder: PolicyOverride = .inherited
-    ) -> ResolvedPolicy {
-        var policy = global
-        var sources: [PolicyField: ResolvedPolicy.Source] = [:]
-
-        // Applied vault-first so the folder pass overwrites it, which is the
-        // whole hierarchy in two lines.
-        for (override, source) in [
-            (vault, ResolvedPolicy.Source.vault),
-            (folder, ResolvedPolicy.Source.folder)
-        ] {
-            if let mode = override.mode {
-                policy.mode = mode
-                sources[.mode] = source
-            }
-            if let application = override.application {
-                policy.application = application
-                sources[.application] = source
-            }
-            if let delay = override.inactivityDelay {
-                policy.inactivityDelay = delay
-                sources[.inactivityDelay] = source
-            }
-            if let sweep = override.sweep {
-                policy.sweep = sweep
-                sources[.sweep] = source
-            }
-            if let preserved = override.preserved {
-                policy.preserved = preserved
-                sources[.preserved] = source
-            }
-            if let modelID = override.modelID {
-                policy.modelID = modelID
-                sources[.model] = source
-            }
-            if let fallback = override.fallbackModelID {
-                policy.fallbackModelID = fallback
-                sources[.fallbackModel] = source
-            }
-        }
-
-        for field in PolicyField.allCases where sources[field] == nil {
-            sources[field] = .global
-        }
-
-        return ResolvedPolicy(policy: policy, sources: sources)
     }
 }

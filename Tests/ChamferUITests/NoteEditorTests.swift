@@ -34,15 +34,26 @@ import Testing
     #expect(state.searchableNotes[1].text == "Edited")
 }
 
-@Test func noteEditingConfigurationRejectsDocumentsWithoutRealBacking() {
-    let realURL = URL(fileURLWithPath: "/Notes/Example.md")
+@Test @MainActor
+func noteEditingConfigurationSupportsEveryDocumentApprovedByItsBackingStore() {
+    let firstURL = URL(fileURLWithPath: "/Notes/First.md")
+    let secondURL = URL(fileURLWithPath: "/Notes/Second.md")
+    let outsideURL = URL(fileURLWithPath: "/Elsewhere/Fake.md")
+    var saved: [URL] = []
     let configuration = NoteEditingConfiguration(
-        documentURL: realURL,
-        save: { _ in }
+        canEdit: { $0.deletingLastPathComponent().path == "/Notes" },
+        save: { saved.append($0.url) }
     )
 
-    #expect(configuration.canEdit(realURL))
-    #expect(!configuration.canEdit(URL(fileURLWithPath: "/Notes/Fake.md")))
+    #expect(configuration.canEdit(firstURL))
+    #expect(configuration.canEdit(secondURL))
+    #expect(!configuration.canEdit(outsideURL))
+
+    try? configuration.save(NoteDocument(url: secondURL, text: "Edited"))
+    #expect(saved == [secondURL])
+    #expect(throws: NoteEditingError.self) {
+        try configuration.save(NoteDocument(url: outsideURL, text: "No"))
+    }
 }
 
 @Test @MainActor
@@ -73,14 +84,61 @@ func noteEditorAutosaveWaitsForAPauseAndWritesOnlyTheLatestText() async throws {
     model.text = "Final draft"
     model.textDidChange()
 
-    try await Task.sleep(for: .milliseconds(40))
+    // Nothing yet: the second edit restarted the pause.
     #expect(!FileManager.default.fileExists(atPath: url.path))
 
-    try await Task.sleep(for: .milliseconds(70))
+    // Waited for rather than slept past. This previously asserted at a fixed
+    // 130ms against an 80ms timer, which held until the machine was busy — and
+    // a suite that fails once in five is a suite nobody trusts.
+    try await untilTrue { FileManager.default.fileExists(atPath: url.path) }
+
+    // The save closure appends, so two writes would leave both drafts behind.
+    // That the file holds only the last one is the debounce working, and it is
+    // true whenever the write lands rather than only at one instant.
     #expect(
         try String(contentsOf: url, encoding: .utf8)
             == "Final draft\n"
     )
+}
+
+@Test @MainActor
+func noteEditorSuppliesTheLastSavedTextForConflictDetection() {
+    let url = URL(fileURLWithPath: "/Notes/Example.md")
+    var writes: [(text: String, replacing: String)] = []
+    let model = NoteEditorModel(
+        document: NoteDocument(url: url, text: "Original"),
+        autosaveDelay: .seconds(10),
+        saveReplacing: { text, expectedText in
+            writes.append((text, expectedText))
+        }
+    )
+
+    model.text = "First save"
+    model.textDidChange()
+    model.flush()
+    model.text = "Second save"
+    model.textDidChange()
+    model.flush()
+
+    #expect(writes.map(\.text) == ["First save", "Second save"])
+    #expect(writes.map(\.replacing) == ["Original", "First save"])
+    #expect(!model.hasUnsavedChanges)
+}
+
+/// Polls until `condition` holds, or gives up.
+///
+/// The timeout is generous on purpose: it is there to fail a genuinely broken
+/// autosave rather than to measure how fast a correct one is.
+private func untilTrue(
+    timeout: Duration = .seconds(5),
+    _ condition: @Sendable () -> Bool
+) async throws {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+        if condition() { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    Issue.record("Timed out waiting for the autosave to land.")
 }
 
 @Test @MainActor

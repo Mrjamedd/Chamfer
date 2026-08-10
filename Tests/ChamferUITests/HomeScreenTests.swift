@@ -23,21 +23,94 @@ import Testing
     #expect(Set(morning + afternoon + evening).count >= 20)
 }
 
-@Test func greetingChangesBetweenRotationWindows() throws {
+@Test func theGreetingAdvancesOnceEveryFortyFiveMinutesTheAppIsOpen() {
+    let opened = Date(timeIntervalSince1970: 1_800_000_000)
+    let schedule = HomeGreetingSchedule(openedAt: opened)
+
+    #expect(schedule.window(at: opened) == 0)
+    #expect(schedule.window(at: opened.addingTimeInterval(44 * 60)) == 0)
+    #expect(schedule.window(at: opened.addingTimeInterval(45 * 60)) == 1)
+    #expect(schedule.window(at: opened.addingTimeInterval(89 * 60)) == 1)
+    #expect(schedule.window(at: opened.addingTimeInterval(90 * 60)) == 2)
+    // A session is the unit, so the clock on the wall never brings a window
+    // forward on its own.
+    #expect(schedule.window(at: opened.addingTimeInterval(-3_600)) == 0)
+}
+
+/// Consecutive windows have to actually read differently, or the interval is a
+/// number with nothing behind it.
+@Test func consecutiveWindowsProduceDifferentLines() throws {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
-
-    let first = try #require(
-        calendar.date(from: DateComponents(year: 2026, month: 7, day: 30, hour: 9, minute: 0))
-    )
-    let second = try #require(
-        calendar.date(from: DateComponents(year: 2026, month: 7, day: 30, hour: 9, minute: 12))
+    let date = try #require(
+        calendar.date(from: DateComponents(year: 2026, month: 7, day: 30, hour: 9))
     )
 
-    #expect(
-        HomeGreetingRotation.text(at: first, name: "Anthony", calendar: calendar)
-            != HomeGreetingRotation.text(at: second, name: "Anthony", calendar: calendar)
+    let lines = (0..<6).map {
+        HomeGreetingRotation.text(
+            window: $0,
+            at: date,
+            name: "Anthony",
+            calendar: calendar
+        )
+    }
+
+    #expect(Set(lines).count == lines.count)
+    #expect(zip(lines, lines.dropFirst()).allSatisfy { $0 != $1 })
+}
+
+/// The rule the request turns on: the line may only move when the page is not
+/// being looked at. `resolve` is the only thing that moves it, and the view
+/// calls it on appear alone.
+@Test func theGreetingHoldsStillUntilItIsResolvedAgain() {
+    let opened = Date(timeIntervalSince1970: 1_800_000_000)
+    var schedule = HomeGreetingSchedule(openedAt: opened)
+
+    let first = schedule.resolve(at: opened, name: "Anthony")
+    #expect(schedule.shownWindow == 0)
+
+    // Two hours of staring at the home screen. The window has come due twice
+    // and the shown line has not moved, because nothing resolved it.
+    let later = opened.addingTimeInterval(2 * 60 * 60)
+    #expect(schedule.isDue(at: later))
+    #expect(schedule.shownWindow == 0)
+
+    // Leaving and coming back is what collects it.
+    let second = schedule.resolve(at: later, name: "Anthony")
+    #expect(schedule.shownWindow == 2)
+    #expect(second != first)
+    #expect(!schedule.isDue(at: later))
+}
+
+@Test func resolvingTwiceInsideOneWindowKeepsTheSameLine() {
+    let opened = Date(timeIntervalSince1970: 1_800_000_000)
+    var schedule = HomeGreetingSchedule(openedAt: opened)
+
+    let first = schedule.resolve(at: opened, name: "Anthony")
+    let again = schedule.resolve(
+        at: opened.addingTimeInterval(44 * 60),
+        name: "Anthony"
     )
+
+    // Bouncing in and out of the home screen must not shuffle the greeting.
+    #expect(first == again)
+    #expect(schedule.shownWindow == 0)
+}
+
+@MainActor
+@Test func theClockIsSharedAcrossVisitsRatherThanRestartingOnEachOne() {
+    let opened = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = HomeGreetingClock(openedAt: opened)
+
+    let first = clock.greeting(at: opened, name: "Anthony")
+    let sameVisit = clock.greeting(at: opened.addingTimeInterval(60), name: "Anthony")
+    let afterAnHour = clock.greeting(
+        at: opened.addingTimeInterval(46 * 60),
+        name: "Anthony"
+    )
+
+    #expect(first == sameVisit)
+    #expect(afterAnHour != first)
 }
 
 @Test func homeCardsAreUniqueAndCarryUsefulPreviewText() {

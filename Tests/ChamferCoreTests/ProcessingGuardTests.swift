@@ -6,59 +6,58 @@ import Testing
 /// model when the user expected local processing. These are the rules that
 /// keep it.
 
+private func policy(modelID: String) -> RewritePolicy {
+    RewritePolicy(
+        mode: .fullCleanup,
+        application: .review,
+        inactivityDelay: 600,
+        sweep: .never,
+        preserved: .standard,
+        modelID: modelID
+    )
+}
+
 @Test func localOnlyRefusesACloudModelRatherThanRunningIt() {
-    let policy = RewritePolicy(modelID: "cloud.sonnet")
+    let policy = policy(modelID: "cloud.sonnet")
     let preferences = AppPreferences(localProcessingOnly: true)
 
     #expect(ProcessingGuard.permittedModel(for: policy, preferences: preferences) == nil)
 }
 
-@Test func localOnlyLeavesOnDeviceModelsAlone() {
-    let policy = RewritePolicy(modelID: "apple.foundation")
+@Test func localOnlyLeavesTheOnDeviceModelAlone() {
+    let policy = policy(modelID: RewritePolicy.localModelIdentifier)
     let preferences = AppPreferences(localProcessingOnly: true)
 
     #expect(
         ProcessingGuard.permittedModel(for: policy, preferences: preferences)
-            == "apple.foundation"
+            == RewritePolicy.localModelIdentifier
     )
 }
 
-/// A local fallback is a legitimate way out; a cloud one is not, and must not
-/// be reached for just because it is configured.
-@Test func localOnlyWillUseALocalFallbackButNeverACloudOne() {
+/// There is no second model to reach for. A blocked cloud policy reports as
+/// unusable rather than quietly running somewhere the user did not choose.
+@Test func localOnlyRefusesCloudWithNothingSubstitutedForIt() {
     let preferences = AppPreferences(localProcessingOnly: true)
+    let cloudVault = policy(modelID: "cloud.sonnet")
 
-    let localFallback = RewritePolicy(
-        modelID: "cloud.sonnet",
-        fallbackModelID: "local.ollama"
-    )
     #expect(
-        ProcessingGuard.permittedModel(for: localFallback, preferences: preferences)
-            == "local.ollama"
-    )
-
-    let cloudFallback = RewritePolicy(
-        modelID: "cloud.sonnet",
-        fallbackModelID: "cloud.haiku"
-    )
-    #expect(
-        ProcessingGuard.permittedModel(for: cloudFallback, preferences: preferences) == nil
+        ProcessingGuard.permittedModel(for: cloudVault, preferences: preferences) == nil
     )
 }
 
 @Test func withoutTheLocalOnlySwitchTheChosenModelIsUsedAsIs() {
-    let policy = RewritePolicy(modelID: "cloud.sonnet")
+    let policy = policy(modelID: "cloud.sonnet")
 
     #expect(
-        ProcessingGuard.permittedModel(for: policy, preferences: .standard)
+        ProcessingGuard.permittedModel(for: policy, preferences: .unconfigured)
             == "cloud.sonnet"
     )
 }
 
-@Test func fallingBackFromLocalToCloudIsRecognisedAsLeavingTheDevice() {
-    #expect(ProcessingGuard.fallbackLeavesDevice(from: "apple.foundation", to: "cloud.sonnet"))
-    #expect(!ProcessingGuard.fallbackLeavesDevice(from: "apple.foundation", to: "local.ollama"))
-    #expect(!ProcessingGuard.fallbackLeavesDevice(from: "cloud.sonnet", to: "cloud.haiku"))
+@Test func onlyCloudIdentifiersAreTreatedAsLeavingTheDevice() {
+    #expect(ProcessingGuard.isCloud("cloud.sonnet"))
+    #expect(!ProcessingGuard.isCloud(RewritePolicy.localModelIdentifier))
+    #expect(!ProcessingGuard.isCloud("local.qwen3.5:4b"))
 }
 
 // MARK: - Notifications
@@ -77,12 +76,25 @@ import Testing
     #expect(preferences.notifies(about: .rewriteReady))
 }
 
-/// A notification for every queued rewrite trains the user to dismiss all of
-/// them, including the ones that matter.
-@Test func aFreshInstallOnlyNotifiesAboutThingsThatHappenedOrBroke() {
-    #expect(AppPreferences.standard.notifies(about: .automaticApplied))
-    #expect(AppPreferences.standard.notifies(about: .rewriteFailed))
-    #expect(AppPreferences.standard.notifies(about: .folderUnavailable))
-    #expect(!AppPreferences.standard.notifies(about: .rewriteReady))
-    #expect(!AppPreferences.standard.notifies(about: .periodicSummary))
+@Test func aFreshInstallHasNoImplicitGlobalPreferenceChoices() {
+    let preferences = AppPreferences.unconfigured
+
+    #expect(preferences.launchAtLogin == nil)
+    #expect(preferences.localProcessingOnly == nil)
+    #expect(NotificationCategory.allCases.allSatisfy {
+        preferences.notificationChoice(for: $0) == nil
+    })
+    #expect(NotificationCategory.allCases.allSatisfy {
+        !preferences.notifies(about: $0)
+    })
+}
+
+@Test func deliberatelyTurningANotificationOffDiffersFromNeverChoosing() {
+    var preferences = AppPreferences.unconfigured
+    #expect(preferences.notificationChoice(for: .rewriteFailed) == nil)
+
+    preferences.setNotification(.rewriteFailed, enabled: false)
+
+    #expect(preferences.notificationChoice(for: .rewriteFailed) == false)
+    #expect(!preferences.notifies(about: .rewriteFailed))
 }

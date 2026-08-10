@@ -7,10 +7,12 @@ import Foundation
 public struct NoteChange: Sendable, Equatable {
     public let url: URL
     public let detectedAt: Date
+    public let requiresRescan: Bool
 
-    public init(url: URL, detectedAt: Date) {
+    public init(url: URL, detectedAt: Date, requiresRescan: Bool = false) {
         self.url = url
         self.detectedAt = detectedAt
+        self.requiresRescan = requiresRescan
     }
 }
 
@@ -21,4 +23,6 @@ public struct NoteChange: Sendable, Equatable {
 public protocol FolderObserving: Sendable {
     func start(onChange: @escaping @Sendable (NoteChange) -> Void) throws
     func stop()
+    func expectOwnWrite(to url: URL)
+    func cancelExpectedOwnWrite(to url: URL)
 }

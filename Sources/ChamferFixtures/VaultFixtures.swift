@@ -27,11 +27,12 @@ public extension Fixtures {
                 url: URL(filePath: "/Users/you/Notes/Work"),
                 noteCount: 168,
                 lastSweep: now.addingTimeInterval(-5_400),
-                // The awkward case: a vault that applies automatically, on a
-                // schedule, protecting more than the defaults do.
-                policy: PolicyOverride(
+                // The awkward case: a vault configured to apply automatically,
+                // on a schedule, protecting more than most vaults do.
+                configuration: VaultConfiguration(
                     mode: .grammar,
                     application: .automatic,
+                    runTrigger: .schedule,
                     sweep: .everyHours(6),
                     preserved: MarkdownStructure.standard.union(.headings)
                 ),
@@ -39,8 +40,7 @@ public extension Fixtures {
                     WatchedFolder(
                         url: URL(filePath: "/Users/you/Notes/Work/Meetings"),
                         noteCount: 64,
-                        lastSweep: now.addingTimeInterval(-5_400),
-                        policy: PolicyOverride(application: .review)
+                        lastSweep: now.addingTimeInterval(-5_400)
                     ),
                     WatchedFolder(
                         url: URL(filePath: "/Users/you/Notes/Work/Drafts"),
@@ -59,7 +59,13 @@ public extension Fixtures {
                 availability: .offline,
                 noteCount: 3_180,
                 lastSweep: now.addingTimeInterval(-86_400 * 6),
-                policy: PolicyOverride(mode: .spelling, fallbackModelID: .some(nil))
+                configuration: VaultConfiguration(
+                    mode: .spelling,
+                    application: .review,
+                    runTrigger: .inactivity,
+                    inactivityDelay: 600,
+                    preserved: .standard
+                )
             )
         ]
     }
@@ -82,25 +88,15 @@ public extension Fixtures {
                 vaultID: index % 3 == 0 ? workVaultID : personalVaultID,
                 occurredAt: now.addingTimeInterval(-60 * minutesAgo),
                 mode: RewriteMode.allCases[index % RewriteMode.allCases.count],
-                modelID: index % 5 == 0 ? "local.ollama" : "apple.foundation",
+                modelID: index % 5 == 0 ? "cloud.sonnet" : "local.ollama",
                 previousText: "teh quick brown fox\n\nand a  second  line",
                 appliedText: "The quick brown fox\n\nand a second line",
                 application: index % 3 == 0 ? .automatic : .review,
                 sourceWasOutdated: index % 17 == 0,
-                fallback: index % 23 == 0 ? cloudFallback : nil,
                 retryCount: index % 19 == 0 ? 2 : 0,
                 outcome: outcome(at: index)
             )
         }
-    }
-
-    private static var cloudFallback: FallbackRecord {
-        FallbackRecord(
-            requestedModel: "apple.foundation",
-            usedModel: "cloud.sonnet",
-            reason: .modelUnavailable(model: "apple.foundation"),
-            leftDevice: true
-        )
     }
 
     private static func outcome(at index: Int) -> HistoryEntry.Outcome {
@@ -124,7 +120,7 @@ public extension Fixtures {
     ]
 
     /// A queue with every awkward state in it at once: outdated, failed,
-    /// regenerating, and one that fell back to the cloud.
+    /// regenerating, and one produced by the cloud model.
     static func awkwardProposals() -> [Proposal] {
         let stale = note("Launch checklist", file: "Launch checklist.md", words: 265, minutesAgo: 5)
         return [
@@ -144,8 +140,7 @@ public extension Fixtures {
                 createdAt: now.addingTimeInterval(-1_200),
                 mode: .spelling,
                 modelID: "cloud.sonnet",
-                vaultID: workVaultID,
-                fallback: cloudFallback
+                vaultID: workVaultID
             ),
             Proposal(
                 note: note("Loose ideas", file: "Loose ideas.md", words: 128, minutesAgo: 300),

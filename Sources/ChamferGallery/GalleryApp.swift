@@ -44,6 +44,7 @@ struct ChamferGalleryApp: App {
             GallerySettingsHost()
                 .preferredColorScheme(.light)
         }
+        .windowResizability(.contentSize)
     }
 }
 

@@ -1,106 +1,238 @@
 import Foundation
 import Testing
+
 @testable import ChamferCore
 
-// MARK: - Hierarchy
-
-@Test func folderSettingsBeatVaultSettingsWhichBeatGlobalDefaults() {
-    let global = RewritePolicy(mode: .spelling, application: .review)
-    let vault = PolicyOverride(mode: .grammar)
-    let folder = PolicyOverride(mode: .fullCleanup)
-
-    #expect(PolicyResolver.resolve(global: global).policy.mode == .spelling)
-    #expect(PolicyResolver.resolve(global: global, vault: vault).policy.mode == .grammar)
+@Test func automaticBroadRewriteIsReroutedWithoutChangingIntentionalReview() {
     #expect(
-        PolicyResolver.resolve(global: global, vault: vault, folder: folder).policy.mode
-            == .fullCleanup
+        RewriteApplicationDecision.decide(
+            requested: .automatic,
+            recommendation: .broaderThanExpectedForMode
+        ) == .queueForReview(automaticReason: .broaderThanExpectedForMode)
+    )
+    #expect(
+        RewriteApplicationDecision.decide(
+            requested: .review,
+            recommendation: .broaderThanExpectedForMode
+        ) == .queueForReview(automaticReason: nil)
+    )
+    #expect(
+        RewriteApplicationDecision.decide(
+            requested: .automatic,
+            recommendation: nil
+        ) == .applyAutomatically
     )
 }
 
-@Test func aLevelWithNothingToSayLeavesEverythingInherited() {
-    let global = RewritePolicy(mode: .clarity, inactivityDelay: 900)
-    let resolved = PolicyResolver.resolve(
-        global: global,
-        vault: .inherited,
-        folder: .inherited
+@Test func proposalsFromBeforeAutomaticReviewReasonsStillDecode() throws {
+    let note = NoteSummary(
+        url: URL(filePath: "/Notes/Old.md"),
+        title: "Old",
+        wordCount: 2,
+        modifiedAt: Date(timeIntervalSince1970: 100)
+    )
+    let oldProposal = Proposal(
+        note: note,
+        hunks: [Hunk(before: "teh", after: "the", startLine: 1)],
+        createdAt: Date(timeIntervalSince1970: 200)
     )
 
-    #expect(resolved.policy == global)
-    #expect(resolved.overriddenFields.isEmpty)
-}
-
-@Test func resolutionRecordsWhereEachSettingCameFrom() {
-    let resolved = PolicyResolver.resolve(
-        global: .standard,
-        vault: PolicyOverride(application: .automatic),
-        folder: PolicyOverride(inactivityDelay: 60)
+    let dataWithoutTheNewOptionalKey = try JSONEncoder().encode(oldProposal)
+    let decoded = try JSONDecoder().decode(
+        Proposal.self,
+        from: dataWithoutTheNewOptionalKey
     )
 
-    #expect(resolved.source(of: .application) == .vault)
-    #expect(resolved.source(of: .inactivityDelay) == .folder)
-    #expect(resolved.source(of: .mode) == .global)
-    #expect(Set(resolved.overriddenFields) == [.application, .inactivityDelay])
+    #expect(decoded.automaticReviewReason == nil)
 }
 
-@Test func aFolderCanOverrideTheSameFieldItsVaultOverrode() {
-    let resolved = PolicyResolver.resolve(
-        global: RewritePolicy(application: .review),
-        vault: PolicyOverride(application: .automatic),
-        folder: PolicyOverride(application: .review)
+// MARK: - No defaults
+
+@Test func aNewlyConnectedVaultHasNoConfigurationAtAll() {
+    let vault = Vault(url: URL(filePath: "/Notes"), noteCount: 12)
+
+    // The whole safety story. A vault Chamfer has not been told how to treat
+    // is a vault Chamfer does not touch — there is nothing to inherit from.
+    #expect(vault.configuration == nil)
+    #expect(!vault.isConfigured)
+}
+
+@Test func aPartialVaultConfigurationCannotRunBySubstitutingDefaults() {
+    var vault = Vault(url: URL(filePath: "/Notes"), noteCount: 12)
+    vault.configuration = VaultConfiguration(mode: .spelling)
+
+    #expect(!vault.isConfigured)
+    #expect(vault.configuration?.mode == .spelling)
+    #expect(vault.configuration?.missingFields == [
+        .application, .runTrigger, .preserved
+    ])
+    #expect(vault.configuration?.resolve(modelID: RewritePolicy.localModelIdentifier) == nil)
+}
+
+@Test func everyIntentionalVaultChoiceResolvesWithoutChangingItsValue() throws {
+    let configuration = VaultConfiguration(
+        mode: .grammar,
+        application: .automatic,
+        runTrigger: .schedule,
+        inactivityDelay: 300,
+        sweep: .everyHours(6),
+        preserved: [.links, .codeBlocks]
     )
 
-    #expect(resolved.policy.application == .review)
-    #expect(resolved.source(of: .application) == .folder)
+    let policy = try #require(configuration.resolve(modelID: "local.qwen3:4b"))
+    #expect(configuration.missingFields.isEmpty)
+    #expect(policy.mode == .grammar)
+    #expect(policy.application == .automatic)
+    #expect(policy.runTrigger == .schedule)
+    #expect(policy.inactivityDelay == 0)
+    #expect(policy.sweep == .everyHours(6))
+    #expect(policy.preserved == [.links, .codeBlocks])
+    #expect(policy.modelID == "local.qwen3:4b")
 }
 
-/// Turning a fallback off has to be distinguishable from not having an opinion
-/// about it, or a vault could never opt out of a global fallback model.
-@Test func aVaultCanTurnOffAFallbackWithoutInheritingOne() {
-    let global = RewritePolicy(fallbackModelID: "cloud.sonnet")
-
-    let inheriting = PolicyResolver.resolve(global: global, vault: .inherited)
-    #expect(inheriting.policy.fallbackModelID == "cloud.sonnet")
-    #expect(inheriting.source(of: .fallbackModel) == .global)
-
-    let switchedOff = PolicyResolver.resolve(
-        global: global,
-        vault: PolicyOverride(fallbackModelID: .some(nil))
+@Test func aCompleteVaultStillCannotRunBeforeAModelIsChosen() {
+    let configuration = VaultConfiguration(
+        mode: .spelling,
+        application: .review,
+        runTrigger: .inactivity,
+        inactivityDelay: 120,
+        preserved: []
     )
-    #expect(switchedOff.policy.fallbackModelID == nil)
-    #expect(switchedOff.source(of: .fallbackModel) == .vault)
+
+    #expect(configuration.resolve(modelID: nil) == nil)
 }
 
-@Test func clearingAFieldReturnsItToInherited() {
-    var override = PolicyOverride(mode: .spelling, sweep: .everyHours(6))
-    #expect(override.fields == [.mode, .sweep])
+@Test func inactivityAndScheduledRunsAreMutuallyExclusiveConfigurationPaths() throws {
+    let inactivity = VaultConfiguration(
+        mode: .spelling,
+        application: .review,
+        runTrigger: .inactivity,
+        inactivityDelay: 300,
+        preserved: .standard
+    )
+    let scheduled = VaultConfiguration(
+        mode: .spelling,
+        application: .review,
+        runTrigger: .schedule,
+        sweep: .dailyAt(hour: 3),
+        preserved: .standard
+    )
 
-    override.clear(.mode)
-    #expect(override.fields == [.sweep])
+    #expect(inactivity.isComplete)
+    #expect(inactivity.missingFields.isEmpty)
+    #expect(inactivity.resolve(modelID: "test")?.runTrigger == .inactivity)
+    #expect(inactivity.resolve(modelID: "test")?.sweep == .never)
 
-    override.clear(.sweep)
-    #expect(override.isInherited)
+    #expect(scheduled.isComplete)
+    #expect(scheduled.missingFields.isEmpty)
+    #expect(scheduled.resolve(modelID: "test")?.runTrigger == .schedule)
+    #expect(scheduled.resolve(modelID: "test")?.inactivityDelay == 0)
 }
 
-// MARK: - Defaults
+@Test func choosingATriggerOnlyRequiresThatTriggersSpecificSetting() {
+    var inactivity = VaultConfiguration(runTrigger: .inactivity)
+    var scheduled = VaultConfiguration(runTrigger: .schedule)
 
-/// The scope is explicit that nothing writes to a note until the user has
-/// asked for it, for the exact place in question.
-@Test func nothingAppliesAutomaticallyOutOfTheBox() {
-    #expect(RewritePolicy.standard.application == .review)
-    #expect(PolicyResolver.resolve(global: .standard).policy.application == .review)
+    #expect(inactivity.missingFields.contains(.inactivityDelay))
+    #expect(!inactivity.missingFields.contains(.sweep))
+    #expect(scheduled.missingFields.contains(.sweep))
+    #expect(!scheduled.missingFields.contains(.inactivityDelay))
+
+    inactivity.inactivityDelay = 600
+    scheduled.sweep = .everyHours(6)
+
+    #expect(!inactivity.missingFields.contains(.inactivityDelay))
+    #expect(!scheduled.missingFields.contains(.sweep))
 }
 
-/// Formatting mode exists to reflow headings and lists, so protecting those by
-/// default would leave one of the five modes with nothing it may touch.
+// MARK: - What the dashboard reports
+
+@Test func unconfiguredVaultsAreReportedSoTheInterfaceCanSaySo() {
+    let waiting = Vault(url: URL(filePath: "/Notes/Waiting"), noteCount: 3)
+    let ready = Vault(
+        url: URL(filePath: "/Notes/Ready"),
+        noteCount: 4,
+            configuration: VaultConfiguration(
+                mode: .fullCleanup,
+                application: .review,
+                runTrigger: .inactivity,
+                inactivityDelay: 600,
+                preserved: .standard
+        )
+    )
+    let state = DashboardState(
+        runState: .idle,
+        folders: [],
+        proposals: [],
+        recentlyCleaned: [],
+        vaults: [waiting, ready]
+    )
+
+    #expect(state.unconfiguredVaults.map(\.id) == [waiting.id])
+    #expect(state.needsConfiguration)
+}
+
+@Test func anUnreachableVaultIsNotAlsoNaggedAboutSetup() {
+    let offline = Vault(
+        url: URL(filePath: "/Volumes/Gone/Notes"),
+        availability: .offline,
+        noteCount: 9
+    )
+    let state = DashboardState(
+        runState: .idle,
+        folders: [],
+        proposals: [],
+        recentlyCleaned: [],
+        vaults: [offline]
+    )
+
+    // A folder on an unplugged disk already says what is wrong with it. Two
+    // warnings about the same vault would be one too many.
+    #expect(state.unconfiguredVaults.isEmpty)
+    #expect(!state.needsConfiguration)
+}
+
+@Test func aFullyConfiguredSetOfVaultsNeedsNothing() {
+    let state = DashboardState(
+        runState: .idle,
+        folders: [],
+        proposals: [],
+        recentlyCleaned: [],
+        vaults: [
+            Vault(
+                url: URL(filePath: "/Notes"),
+                noteCount: 4,
+                configuration: VaultConfiguration(
+                    mode: .fullCleanup,
+                    application: .review,
+                    runTrigger: .inactivity,
+                    inactivityDelay: 600,
+                    preserved: .standard
+                )
+            )
+        ]
+    )
+
+    #expect(!state.needsConfiguration)
+}
+
+// MARK: - Preservation
+
 @Test func standardPreservationProtectsPayloadsButNotProse() {
-    #expect(MarkdownStructure.standard.contains(.codeBlocks))
-    #expect(MarkdownStructure.standard.contains(.frontMatter))
-    #expect(MarkdownStructure.standard.contains(.links))
-    #expect(!MarkdownStructure.standard.contains(.headings))
-    #expect(!MarkdownStructure.standard.contains(.lists))
+    let standard = MarkdownStructure.standard
+
+    // Addresses and payloads: things a rewrite has no business editing.
+    #expect(standard.contains(.links))
+    #expect(standard.contains(.codeBlocks))
+    #expect(standard.contains(.frontMatter))
+    #expect(standard.contains(.taskCheckboxes))
+
+    // Headings and lists are left out so formatting mode is not a no-op.
+    #expect(!standard.contains(.headings))
+    #expect(!standard.contains(.lists))
 }
 
 @Test func preservationNamesTheStructuresItProtects() {
-    let structure: MarkdownStructure = [.headings, .codeBlocks]
-    #expect(structure.titles == ["Headings", "Code blocks"])
+    let structure: MarkdownStructure = [.headings, .links]
+    #expect(structure.titles == ["Headings", "Links"])
 }

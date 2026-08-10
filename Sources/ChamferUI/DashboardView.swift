@@ -98,7 +98,7 @@ enum DashboardBottomBarItems {
 
     static func make(
         for state: DashboardState,
-        modelsState: ModelsLandscapeState = ModelsLandscapeState()
+        modelsState: ModelsDashboardState = ModelsDashboardState()
     ) -> [BottomBar.Item] {
         [
             .init(
@@ -112,34 +112,47 @@ enum DashboardBottomBarItems {
                 // where notes come from — not a fourth thing the bar is about.
                 footAction: .init(
                     id: DashboardView.FootAction.manageVaults,
-                    title: state.vaults.isEmpty ? "Connect a vault…" : "Manage vaults…",
+                    title: footActionTitle(for: state),
                     symbol: "folder"
-                )
+                ),
+                // Vaults is reached from this list, so the dot belongs on this
+                // item: it is visible from Notes, Review and Models alike
+                // rather than only on the page you would have to already be on.
+                needsAttention: state.needsConfiguration
             ),
             .init(
                 id: DashboardView.Tab.review,
                 symbol: "checkmark.circle",
                 label: "Review",
-                entries: state.pendingProposals.map { proposal in
+                entries: state.actionableProposals.map { proposal in
                     .init(
                         id: proposal.id.uuidString,
                         title: proposal.note.title,
                         detail: "\(proposal.hunks.count) change\(proposal.hunks.count == 1 ? "" : "s")"
                     )
-                }
+                },
+                // The one destination that accumulates. A full queue and an
+                // empty one used to look identical until you pointed at them.
+                count: state.actionableProposals.count
             ),
             .init(
                 id: DashboardView.Tab.models,
                 symbol: "cpu",
                 label: "Models",
-                entries: Backend.all(
-                    runState: state.runState,
-                    landscapeState: modelsState
-                ).map {
+                entries: Backend.all(state: modelsState).map {
                     .init(id: $0.name, title: $0.shortName, detail: $0.status)
                 }
             )
         ]
+    }
+
+    private static func footActionTitle(for state: DashboardState) -> String {
+        if state.vaults.isEmpty { return "Connect a vault…" }
+        let waiting = state.unconfiguredVaults.count
+        guard waiting > 0 else { return "Manage vaults…" }
+        return waiting == 1
+            ? "1 vault needs setting up…"
+            : "\(waiting) vaults need setting up…"
     }
 
     private static func recentNoteEntries(
@@ -171,16 +184,22 @@ enum DashboardBottomBarItems {
 public struct DashboardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var tab: String
-    @State private var pointerAtTop = false
-    @State private var closeHovered = false
-    @State private var showingHome = false
-    @State private var displayedNote: NoteDocument?
-    @State private var isSearching = false
-    @State private var modelsState: ModelsLandscapeState
-    @State private var state: DashboardState
-    @State private var editorModel: NoteEditorModel?
-    @State private var showingVersions = false
+    @LegacyState private var tab: String
+    @LegacyState private var pointerAtTop = false
+    @LegacyState private var closeHovered = false
+    @LegacyState private var showingHome = false
+    @LegacyState private var displayedNote: NoteDocument?
+    @LegacyState private var isSearching = false
+    @LegacyState private var modelsState: ModelsDashboardState
+    /// Bound rather than copied. While this was `@LegacyState` the page was working
+    /// on a private duplicate: accepting a rewrite updated the timeline on
+    /// screen and nothing else, so the menu bar still offered it, Settings
+    /// still resolved against the old policy, and none of it survived a quit.
+    /// The model owns the state; this view renders and edits it in place.
+    @Binding private var state: DashboardState
+    @Binding private var navigationRequest: String?
+    @LegacyState private var editorModel: NoteEditorModel?
+    @LegacyState private var showingChangeHistory = false
 
     private let editing: NoteEditingConfiguration?
     private let noteLoadError: String?
@@ -190,27 +209,57 @@ public struct DashboardView: View {
     /// The gallery leaves it at its default and the control does nothing there,
     /// which is correct: the harness has no settings window to open.
     private let onOpenSettings: () -> Void
+    /// Raising a folder picker means `NSOpenPanel`, which means AppKit and a
+    /// running application — neither of which a view should assume. Injected
+    /// for the same reason as the two above.
+    ///
+    /// Spelled `@MainActor @Sendable` rather than bare because it is handed
+    /// straight to `VaultActions`, which is `Sendable` — the panel is raised on
+    /// the main thread and the compiler is entitled to be told so.
+    private let onConnectVault: @MainActor @Sendable () -> Void
+    /// What Review's verbs actually do.
+    ///
+    /// The app passes real ones — snapshot, write, record — and the gallery
+    /// passes none, falling back to the in-memory versions below so the page
+    /// can be exercised on fixtures without a disk. The page itself does not
+    /// know which it has, which is the point.
+    private let injectedReview: ReviewActions?
+    private let injectedVaults: VaultActions?
 
     private static let topGutter: CGFloat = 52
 
     public init(
-        state: DashboardState,
+        state: Binding<DashboardState>,
+        navigationRequest: Binding<String?> = .constant(nil),
         tab: String = Tab.notes,
+        /// Seeds the Models page instead of reading preferences. Only the
+        /// design harness passes this, so a given model state can be put on
+        /// screen without a real Ollama install behind it.
+        modelsState: ModelsDashboardState? = nil,
         editing: NoteEditingConfiguration? = nil,
         noteLoadError: String? = nil,
         onClose: @escaping () -> Void = {},
-        onOpenSettings: @escaping () -> Void = {}
+        onOpenSettings: @escaping () -> Void = {},
+        onConnectVault: @escaping @MainActor @Sendable () -> Void = {},
+        review: ReviewActions? = nil,
+        vaults: VaultActions? = nil
     ) {
         self.editing = editing
         self.noteLoadError = noteLoadError
         self.onClose = onClose
         self.onOpenSettings = onOpenSettings
+        self.onConnectVault = onConnectVault
+        self.injectedReview = review
+        self.injectedVaults = vaults
         _tab = State(initialValue: tab)
-        _state = State(initialValue: state)
-        _modelsState = State(initialValue: ModelsPreferences.loadState())
-        _displayedNote = State(initialValue: state.openNote)
+        _state = state
+        _navigationRequest = navigationRequest
+        _modelsState = State(
+            initialValue: modelsState ?? ModelsPreferences.loadState()
+        )
+        _displayedNote = State(initialValue: state.wrappedValue.openNote)
         _editorModel = State(
-            initialValue: state.openNote.flatMap { document in
+            initialValue: state.wrappedValue.openNote.flatMap { document in
                 guard let editing, editing.canEdit(document.url) else {
                     return nil
                 }
@@ -280,6 +329,7 @@ public struct DashboardView: View {
                     searchableNotes: state.searchableNotes,
                     onOpenSearchResult: openSearchResult,
                     onSelectFootAction: handleFootAction,
+                    onSelectEntry: handleBarEntry,
                     idle: .standard,
                     showsSelection: DashboardBottomBarSelectionVisibility.shouldShow(
                         showingHome: showingHome
@@ -298,15 +348,41 @@ public struct DashboardView: View {
             // while you are reading.
             closeZone
 
-            versionsOverlay
+            changeHistoryOverlay
         }
         .background {
             TrackpadPanGesture(onEnded: handleTabGesture)
         }
         .animation(
             Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
-            value: showingVersions
+            value: showingChangeHistory
         )
+        .onChange(of: state.openNote) { _, note in
+            synchronizeOpenNote(note)
+        }
+        .onChange(of: navigationRequest) { _, destination in
+            consumeNavigationRequest(destination)
+        }
+        .onAppear {
+            consumeNavigationRequest(navigationRequest)
+        }
+    }
+
+    private func consumeNavigationRequest(_ destination: String?) {
+        guard let destination else { return }
+        let valid = [Tab.notes, Tab.review, Tab.models, Tab.vaults]
+        guard valid.contains(destination) else {
+            navigationRequest = nil
+            return
+        }
+        withAnimation(
+            Chamfer.Motion.reduce(Chamfer.Motion.navigation, when: reduceMotion)
+        ) {
+            tab = destination
+            showingHome = false
+            isSearching = false
+        }
+        navigationRequest = nil
     }
 
     @ViewBuilder
@@ -333,24 +409,44 @@ public struct DashboardView: View {
     @ViewBuilder
     private var content: some View {
         if showingHome {
-            HomeScreenView(state: state, onOpenNote: openDocument)
+            HomeScreenView(
+                state: state,
+                onOpenNote: openDocument,
+                onConnectVault: state.vaults.isEmpty ? onConnectVault : nil
+            )
         } else {
             switch tab {
             case Tab.review:
-                ReviewTimelinePage(state: state, actions: reviewActions)
+                ReviewTimelinePage(
+                    state: state,
+                    actions: reviewActions,
+                    onConnectVault: state.vaults.isEmpty ? onConnectVault : nil
+                )
             case Tab.vaults:
                 VaultsPage(
                     vaults: state.vaults,
-                    globalPolicy: state.globalPolicy,
-                    actions: vaultActions
+                    notes: state.recentNotes,
+                    activeModelConfigured: activeModelConfigured,
+                    actions: vaultActions,
+                    onOpenModels: openModels
                 )
             case Tab.models:
-                ModelsPage(runState: state.runState, state: $modelsState)
+                ModelsPage(state: $modelsState)
             default:
                 if let noteLoadError, displayedNote == nil {
                     PageMessage(
                         title: "Couldn’t open Example.md",
                         detail: noteLoadError
+                    )
+                } else if displayedNote == nil, state.vaults.isEmpty {
+                    // The first thing a new install shows. It used to say
+                    // "pick a note from your vault" to somebody who had no
+                    // vault and no way to get one from this page.
+                    PageMessage(
+                        title: "Nothing to work on yet",
+                        detail: "Point Chamfer at a folder of Markdown or plain-text notes. It watches everything inside, including subfolders, and leaves every file alone until you say otherwise.",
+                        actionTitle: "Connect a vault…",
+                        action: onConnectVault
                     )
                 } else if let note = displayedNote {
                     if let editorModel,
@@ -370,6 +466,20 @@ public struct DashboardView: View {
                     )
                 }
             }
+        }
+    }
+
+    private var activeModelConfigured: Bool {
+        switch modelsState.active {
+        case .local:
+            // Activation already required the model to be on disk. Nothing
+            // else has to be configured: which model runs is the device's
+            // answer, not a setting anyone left half-filled.
+            return true
+        case .cloud:
+            return ModelsPreferences.loadCloudProvider() != nil
+        case nil:
+            return false
         }
     }
 
@@ -394,12 +504,19 @@ public struct DashboardView: View {
         )
     }
 
-    /// Versions of whatever note is on the page, newest first. Empty for every
-    /// destination that is not a note, which is what keeps the control out of
-    /// the gutter everywhere it would mean nothing.
-    private var versionsForOpenNote: [HistoryEntry] {
-        guard tab == Tab.notes, !showingHome, let note = displayedNote else { return [] }
-        return HistoryWindow.forNote(at: note.url, in: state.history)
+    /// Queued and recorded changes for the note on the page. Nil for every
+    /// non-note destination, which keeps the control out of the gutter where
+    /// it would have no object. An empty value is still a note history: the
+    /// stable zero-state control is how the feature remains discoverable.
+    private var changesForOpenNote: NoteChangeHistory? {
+        guard DashboardNoteHistoryControlVisibility.shouldShow(
+            showingNotes: tab == Tab.notes,
+            showingHome: showingHome,
+            hasOpenNote: displayedNote != nil
+        ), let note = displayedNote else {
+            return nil
+        }
+        return state.changes(forNoteAt: note.url)
     }
 
     /// The gutter's three controls, as one cluster rather than three errands.
@@ -431,7 +548,7 @@ public struct DashboardView: View {
                         action: handleClose
                     )
 
-                    versionsControl
+                    historyControl
                         .frame(
                             width: DashboardGutterLayout.slot,
                             alignment: .leading
@@ -445,23 +562,28 @@ public struct DashboardView: View {
         .contentShape(Rectangle())
         .onHover { pointerAtTop = $0 }
         .animation(gutterCurve, value: pointerAtTop)
-        // Versions comes and goes with the note under it, which can happen
+        // History comes and goes with the note under it, which can happen
         // while the gutter is already open — switching tabs, or closing the
         // note. Without its own trigger that change had no curve to animate
         // on and the control simply blinked out.
-        .animation(gutterCurve, value: versionsForOpenNote.isEmpty)
+        .animation(gutterCurve, value: changesForOpenNote?.noteURL)
     }
 
     /// Reserved whether or not there is a note, so the cluster is symmetric
     /// and close cannot be nudged off centre by its neighbour appearing.
     @ViewBuilder
-    private var versionsControl: some View {
-        let versions = versionsForOpenNote
+    private var historyControl: some View {
         ZStack(alignment: .leading) {
             Color.clear
-            if !versions.isEmpty {
-                FloatingVersionsButton(count: versions.count) {
-                    showingVersions = true
+            if let changes = changesForOpenNote {
+                FloatingHistoryButton(count: changes.count) {
+                    // A decision here can write the note immediately. Land the
+                    // user's pending draft first so it either becomes the
+                    // proposal's current source or is safely recognised as an
+                    // outdated rewrite instead of overwriting the decision a
+                    // fraction of a second later.
+                    editorModel?.flush()
+                    showingChangeHistory = true
                 }
                 .transition(gutterTransition)
             }
@@ -483,23 +605,20 @@ public struct DashboardView: View {
     }
 
     @ViewBuilder
-    private var versionsOverlay: some View {
-        if showingVersions, let note = displayedNote {
-            NoteVersionsSheet(
-                noteTitle: note.url.deletingPathExtension().lastPathComponent,
-                entries: versionsForOpenNote,
-                onRestore: { entry in
-                    restore(entry)
-                    dismissVersions()
-                },
-                onDismiss: dismissVersions
+    private var changeHistoryOverlay: some View {
+        if showingChangeHistory, let note = displayedNote {
+            NoteChangeHistorySheet(
+                note: note,
+                state: state,
+                actions: reviewActions,
+                onDismiss: dismissChangeHistory
             )
         }
     }
 
-    private func dismissVersions() {
+    private func dismissChangeHistory() {
         Haptics.commit()
-        showingVersions = false
+        showingChangeHistory = false
     }
 
     private func handleClose() {
@@ -543,8 +662,86 @@ public struct DashboardView: View {
             Chamfer.Motion.reduce(Chamfer.Motion.navigation, when: reduceMotion)
         ) {
             displayedNote = current
+            state.openNote = current
             tab = Tab.notes
             showingHome = false
+        }
+    }
+
+    private func synchronizeOpenNote(_ document: NoteDocument?) {
+        guard let document else {
+            displayedNote = nil
+            editorModel = nil
+            showingChangeHistory = false
+            return
+        }
+        let isDifferentNote = displayedNote?.url.standardizedFileURL
+            != document.url.standardizedFileURL
+
+        if isDifferentNote {
+            displayedNote = document
+            if let editing, editing.canEdit(document.url) {
+                editorModel = Self.makeEditor(for: document, editing: editing)
+            } else {
+                editorModel = nil
+            }
+        } else if editorModel == nil {
+            displayedNote = document
+        } else if let editorModel,
+                  !editorModel.hasUnsavedChanges,
+                  editorModel.text != document.text {
+            // A review action or another editor changed the backing file. A
+            // clean editor follows that new truth; a dirty one keeps its draft
+            // and lets the compare-before-save guard report the conflict.
+            displayedNote = document
+            self.editorModel = editing.map {
+                Self.makeEditor(for: document, editing: $0)
+            }
+        }
+
+        // Whatever set `openNote` was asking for that note to be *shown*, and
+        // it is usually a page that is not Notes: the Vaults page's "Open a
+        // note", or Review's "Open note". Loading the document without moving
+        // to the page that draws it is why both of those buttons did nothing —
+        // the note arrived, behind whatever you were already looking at.
+        guard tab != Tab.notes || showingHome else { return }
+        withAnimation(
+            Chamfer.Motion.reduce(Chamfer.Motion.navigation, when: reduceMotion)
+        ) {
+            tab = Tab.notes
+            showingHome = false
+        }
+    }
+
+    /// Something in the bar's hover list was clicked.
+    ///
+    /// Each destination's list means something different, so each is answered
+    /// differently: a note opens, a pending rewrite goes to the page where it
+    /// can be judged, a backend goes to the page where it is configured. Before
+    /// this, all three did nothing at all.
+    private func handleBarEntry(itemID: String, entryID: String) {
+        switch itemID {
+        case Tab.notes:
+            // The entry's id is the note's standardized URL, which is how the
+            // list was built. Matched rather than parsed, so a note that has
+            // since gone simply does not open.
+            guard let document = state.searchableNotes.first(where: {
+                $0.url.standardizedFileURL.absoluteString == entryID
+            }) else { return }
+            openDocument(document)
+
+        case Tab.review, Tab.models:
+            // Neither page can be scrolled to a particular row yet, so this
+            // takes the user to the page rather than pretending otherwise.
+            withAnimation(
+                Chamfer.Motion.reduce(Chamfer.Motion.navigation, when: reduceMotion)
+            ) {
+                tab = itemID
+                showingHome = false
+            }
+
+        default:
+            break
         }
     }
 
@@ -558,18 +755,32 @@ public struct DashboardView: View {
         }
     }
 
+    private func openModels() {
+        withAnimation(
+            Chamfer.Motion.reduce(Chamfer.Motion.navigation, when: reduceMotion)
+        ) {
+            tab = Tab.models
+            showingHome = false
+            isSearching = false
+        }
+    }
+
     /// What the Review page does when the user judges a rewrite.
     ///
     /// The state changes live here rather than in the page so the page stays a
     /// renderer, and so the same page can be driven by fixtures in the gallery
     /// and by the watcher in the app without knowing which it is.
     private var reviewActions: ReviewActions {
+        injectedReview ?? inMemoryReviewActions
+    }
+
+    private var inMemoryReviewActions: ReviewActions {
         ReviewActions(
-            accept: { proposal in
-                apply(proposal, as: .review)
+            accept: { proposal, allowOutdated in
+                apply(proposal, as: .review, allowOutdated: allowOutdated)
             },
             reject: { proposal in
-                update(proposal.id) { $0.state = .rejected }
+                state.proposals.removeAll { $0.id == proposal.id }
             },
             regenerate: { proposal in
                 update(proposal.id) { $0.state = .regenerating }
@@ -590,28 +801,31 @@ public struct DashboardView: View {
     }
 
     private var vaultActions: VaultActions {
+        injectedVaults ?? inMemoryVaultActions
+    }
+
+    private var inMemoryVaultActions: VaultActions {
         VaultActions(
-            openVault: { vault in
+            openNote: { summary in
                 guard let document = state.searchableNotes.first(where: {
-                    $0.url.path().hasPrefix(vault.url.path())
+                    $0.url.standardizedFileURL == summary.url.standardizedFileURL
                 }) else { return }
                 openDocument(document)
             },
-            updatePolicy: { vaultID, override in
+            updateConfiguration: { vaultID, policy in
                 guard let index = state.vaults.firstIndex(where: { $0.id == vaultID })
                 else { return }
-                state.vaults[index].policy = override
-            },
-            updateFolderPolicy: { vaultID, folderID, override in
-                guard let vaultIndex = state.vaults.firstIndex(where: { $0.id == vaultID }),
-                      let folderIndex = state.vaults[vaultIndex].folders.firstIndex(
-                          where: { $0.id == folderID }
-                      )
-                else { return }
-                state.vaults[vaultIndex].folders[folderIndex].policy = override
+                state.vaults[index].configuration = policy
             },
             removeVault: { vaultID in
-                state.vaults.removeAll { $0.id == vaultID }
+                state.disconnectVault(vaultID)
+            },
+            connectVault: onConnectVault,
+            reconnectVault: { _ in onConnectVault() },
+            updateRules: { vaultID, rules in
+                guard let index = state.vaults.firstIndex(where: { $0.id == vaultID })
+                else { return }
+                state.vaults[index].rules = rules
             }
         )
     }
@@ -632,7 +846,11 @@ public struct DashboardView: View {
     /// the only copy of the text being replaced — the scope's rule that a
     /// snapshot precedes every applied rewrite is this ordering, not a
     /// separate step that could be skipped.
-    private func apply(_ proposal: Proposal, as application: RewriteApplication) {
+    private func apply(
+        _ proposal: Proposal,
+        as application: RewriteApplication,
+        allowOutdated: Bool = false
+    ) {
         let previous = state.searchableNotes
             .first { $0.url == proposal.note.url }?
             .text ?? ""
@@ -644,12 +862,14 @@ public struct DashboardView: View {
             mode: proposal.mode,
             modelID: proposal.modelID,
             previousText: previous,
-            appliedText: proposal.hunks.reduce(previous) { text, hunk in
-                text.replacingOccurrences(of: hunk.before, with: hunk.after)
-            },
+            // Positional, via the diff engine. A search-and-replace over the
+            // hunks edits the first line that happens to match, and notes
+            // repeat lines constantly — blank ones, `## Notes`, `- [ ]`.
+            appliedText: proposal.proposedText
+                ?? TextDiff.apply(proposal.hunks, to: previous)
+                ?? previous,
             application: application,
-            sourceWasOutdated: state.isOutdated(proposal),
-            fallback: proposal.fallback,
+            sourceWasOutdated: allowOutdated && state.isOutdated(proposal),
             retryCount: proposal.retryCount
         )
 
@@ -657,7 +877,7 @@ public struct DashboardView: View {
             Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion)
         ) {
             state.history.insert(entry, at: 0)
-            update(proposal.id) { $0.state = .accepted }
+            state.proposals.removeAll { $0.id == proposal.id }
         }
     }
 
@@ -679,8 +899,8 @@ public struct DashboardView: View {
                 appliedText: entry.appliedText,
                 application: entry.application,
                 sourceWasOutdated: entry.sourceWasOutdated,
-                fallback: entry.fallback,
                 retryCount: entry.retryCount,
+                ruleIDs: entry.ruleIDs,
                 outcome: .reverted(at: Date())
             )
         }
@@ -696,8 +916,11 @@ public struct DashboardView: View {
         for document: NoteDocument,
         editing: NoteEditingConfiguration
     ) -> NoteEditorModel {
-        NoteEditorModel(document: document) { text in
-            try editing.save(NoteDocument(url: document.url, text: text))
+        NoteEditorModel(document: document) { text, expectedText in
+            try editing.save(
+                NoteDocument(url: document.url, text: text),
+                replacing: expectedText
+            )
         }
     }
 
@@ -721,4 +944,3 @@ public struct DashboardView: View {
         }
     }
 }
-

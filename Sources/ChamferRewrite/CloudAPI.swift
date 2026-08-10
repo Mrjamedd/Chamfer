@@ -17,7 +17,7 @@ public enum CloudProvider: String, CaseIterable, Codable, Sendable {
         switch self {
         case .openAI: "gpt-5.6-luna"
         case .anthropic: "claude-haiku-4-5"
-        case .google: "gemini-3.5-flash"
+        case .google: "gemini-3.6-flash"
         }
     }
 
@@ -57,10 +57,6 @@ public enum ModelAccessError: LocalizedError, Sendable {
 }
 
 public enum CloudAPIRequestFactory {
-    private static let rewriteInstruction = """
-        Improve the supplied note while preserving its meaning, Markdown, links, code, and factual claims. Return only the revised note text.
-        """
-
     public static func validationRequest(
         provider: CloudProvider,
         apiKey: String
@@ -86,8 +82,11 @@ public enum CloudAPIRequestFactory {
     public static func rewriteRequest(
         provider: CloudProvider,
         apiKey: String,
-        text: String
+        text: String,
+        instructions: String = RewriteInstructions.standard,
+        maximumResponseTokens: Int? = nil
     ) throws -> URLRequest {
+        let rewriteInstruction = instructions
         let urlString = switch provider {
         case .openAI:
             "https://api.openai.com/v1/responses"
@@ -105,12 +104,13 @@ public enum CloudAPIRequestFactory {
             [
                 "model": provider.defaultModel,
                 "instructions": rewriteInstruction,
-                "input": text
+                "input": text,
+                "max_output_tokens": maximumResponseTokens ?? 4_096
             ]
         case .anthropic:
             [
                 "model": provider.defaultModel,
-                "max_tokens": 4_096,
+                "max_tokens": maximumResponseTokens ?? 4_096,
                 "system": rewriteInstruction,
                 "messages": [["role": "user", "content": text]]
             ]
@@ -122,7 +122,11 @@ public enum CloudAPIRequestFactory {
                 "contents": [[
                     "role": "user",
                     "parts": [["text": text]]
-                ]]
+                ]],
+                "generationConfig": [
+                    "temperature": 0,
+                    "maxOutputTokens": maximumResponseTokens ?? 4_096
+                ]
             ]
         }
 
@@ -208,12 +212,16 @@ public struct CloudAPIClient: Sendable {
     public func rewrite(
         provider: CloudProvider,
         apiKey: String,
-        text: String
+        text: String,
+        instructions: String = RewriteInstructions.standard,
+        maximumResponseTokens: Int? = nil
     ) async throws -> String {
         let request = try CloudAPIRequestFactory.rewriteRequest(
             provider: provider,
             apiKey: apiKey,
-            text: text
+            text: text,
+            instructions: instructions,
+            maximumResponseTokens: maximumResponseTokens
         )
         let data = try await perform(request)
         return try CloudAPIResponseParser.text(provider: provider, data: data)
@@ -265,7 +273,20 @@ public struct CloudRewriter: Rewriter {
         }
     }
 
-    public func rewrite(_ section: String) async throws -> String {
-        try await client.rewrite(provider: provider, apiKey: apiKey, text: section)
+    public func rewrite(_ section: String, instructions: String) async throws -> String {
+        try await rewrite(RewriteRequest(text: section), instructions: instructions)
+    }
+
+    public func rewrite(
+        _ request: RewriteRequest,
+        instructions: String
+    ) async throws -> String {
+        try await client.rewrite(
+            provider: provider,
+            apiKey: apiKey,
+            text: request.prompt,
+            instructions: instructions,
+            maximumResponseTokens: request.maximumResponseTokens
+        )
     }
 }

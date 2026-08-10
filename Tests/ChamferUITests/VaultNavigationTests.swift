@@ -23,7 +23,7 @@ import Testing
     let foot = try #require(notes.footAction)
 
     #expect(foot.id == DashboardView.FootAction.manageVaults)
-    #expect(foot.title == "Manage vaults…")
+    #expect(foot.title == "1 vault needs setting up…")
     #expect(notes.showsSearch)
 }
 

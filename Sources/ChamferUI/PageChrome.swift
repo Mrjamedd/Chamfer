@@ -52,9 +52,29 @@ struct PageScroll<Content: View>: View {
 
 /// The page's own empty state: centred, quiet, and always saying what would
 /// put something here.
+///
+/// Takes an optional action, because most of this app's empty states are not
+/// waiting for time to pass — they are waiting for the user to connect a vault,
+/// and telling somebody what to do while giving them no way to do it is the
+/// difference between an empty state and a dead end. The shipping app opened on
+/// exactly that dead end.
 struct PageMessage: View {
     let title: String
     let detail: String
+    var actionTitle: String?
+    var action: (() -> Void)?
+
+    init(
+        title: String,
+        detail: String,
+        actionTitle: String? = nil,
+        action: (() -> Void)? = nil
+    ) {
+        self.title = title
+        self.detail = detail
+        self.actionTitle = actionTitle
+        self.action = action
+    }
 
     var body: some View {
         VStack(spacing: Chamfer.Space.snug) {
@@ -66,6 +86,15 @@ struct PageMessage: View {
                 .foregroundStyle(Chamfer.Palette.pageTextSoft)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 380)
+
+            if let actionTitle, let action {
+                Button(actionTitle) {
+                    Haptics.pop()
+                    action()
+                }
+                .buttonStyle(ChamferButtonStyle(.primary))
+                .padding(.top, Chamfer.Space.snug)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

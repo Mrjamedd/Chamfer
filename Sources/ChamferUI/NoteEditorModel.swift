@@ -9,20 +9,34 @@ final class NoteEditorModel {
     private(set) var saveErrorMessage: String?
 
     @ObservationIgnored private let autosaveDelay: Duration
-    @ObservationIgnored private let save: (String) throws -> Void
+    @ObservationIgnored private let save: (String, String) throws -> Void
     @ObservationIgnored private var lastSavedText: String
     @ObservationIgnored private var pendingSave: Task<Void, Never>?
 
-    init(
+    convenience init(
         document: NoteDocument,
         autosaveDelay: Duration = .milliseconds(450),
         save: @escaping (String) throws -> Void
     ) {
+        self.init(
+            document: document,
+            autosaveDelay: autosaveDelay,
+            saveReplacing: { text, _ in try save(text) }
+        )
+    }
+
+    init(
+        document: NoteDocument,
+        autosaveDelay: Duration = .milliseconds(450),
+        saveReplacing: @escaping (String, String) throws -> Void
+    ) {
         text = document.text
         lastSavedText = document.text
         self.autosaveDelay = autosaveDelay
-        self.save = save
+        self.save = saveReplacing
     }
+
+    var hasUnsavedChanges: Bool { text != lastSavedText }
 
     func textDidChange() {
         pendingSave?.cancel()
@@ -60,7 +74,7 @@ final class NoteEditorModel {
 
     private func persist(_ text: String) {
         do {
-            try save(text)
+            try save(text, lastSavedText)
             lastSavedText = text
             saveErrorMessage = nil
         } catch {

@@ -5,6 +5,12 @@ import SwiftUI
 ///
 /// Monospaced on purpose: the user is judging an edit, and proportional type
 /// hides exactly the whitespace and punctuation differences that matter.
+///
+/// The two lines carry a quiet wash of their tint; the words that actually
+/// moved carry a stronger one on top. In spelling and grammar modes most hunks
+/// differ by a single word, and a whole-line tint made a typo fix look like a
+/// rewritten paragraph — so the size of the highlight now matches the size of
+/// the edit.
 public struct DiffHunkView: View {
     @Environment(\.chamferSurface) private var surface
 
@@ -14,21 +20,53 @@ public struct DiffHunkView: View {
         self.hunk = hunk
     }
 
-    public var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            line(marker: "−", text: hunk.before, tint: surface.danger, background: surface.removedFill)
-            line(marker: "+", text: hunk.after, tint: surface.positive, background: surface.addedFill)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous))
+    private var segments: (before: [DiffSegment], after: [DiffSegment]) {
+        TextDiff.segments(before: hunk.before, after: hunk.after)
     }
 
-    private func line(marker: String, text: String, tint: Color, background: Color) -> some View {
+    public var body: some View {
+        let segments = segments
+
+        VStack(alignment: .leading, spacing: 1) {
+            // A pure insertion has nothing to show as "before", and an empty
+            // tinted band reads as a bug rather than as an absence.
+            if !hunk.before.isEmpty {
+                line(
+                    marker: "−",
+                    segments: segments.before,
+                    tint: surface.danger,
+                    background: surface.removedFill,
+                    emphasis: surface.removedEmphasis
+                )
+            }
+            if !hunk.after.isEmpty {
+                line(
+                    marker: "+",
+                    segments: segments.after,
+                    tint: surface.positive,
+                    background: surface.addedFill,
+                    emphasis: surface.addedEmphasis
+                )
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
+    }
+
+    private func line(
+        marker: String,
+        segments: [DiffSegment],
+        tint: Color,
+        background: Color,
+        emphasis: Color
+    ) -> some View {
         HStack(alignment: .top, spacing: Chamfer.Space.snug) {
             Text(marker)
                 .font(Chamfer.TypeScale.mono)
                 .foregroundStyle(tint)
                 .frame(width: 10, alignment: .center)
-            Text(text)
+            marked(segments, emphasis: emphasis)
                 .font(Chamfer.TypeScale.mono)
                 .foregroundStyle(surface.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -37,6 +75,33 @@ public struct DiffHunkView: View {
         .padding(.vertical, Chamfer.Space.snug)
         .padding(.horizontal, Chamfer.Space.regular)
         .background(background)
+    }
+
+    /// One `Text` over an `AttributedString`, rather than a row of views.
+    ///
+    /// A stack of per-word views cannot wrap mid-sentence, which is the one
+    /// thing a diff line has to do. Concatenated `Text` cannot carry a
+    /// background either — `.background` returns a view, not a `Text`, so the
+    /// pieces stop being concatenable. An attributed string does both: it
+    /// reflows as one run of type and takes a background per segment.
+    private func marked(_ segments: [DiffSegment], emphasis: Color) -> Text {
+        var string = AttributedString()
+        for segment in segments {
+            var run = AttributedString(segment.text)
+            if segment.kind != .unchanged {
+                run.backgroundColor = emphasis
+            }
+            string.append(run)
+        }
+        return Text(string)
+    }
+
+    /// VoiceOver gets the whole change as a sentence. Reading a tinted run of
+    /// words aloud without saying what the tint means is worse than useless.
+    private var accessibilityDescription: String {
+        if hunk.before.isEmpty { return "Added: \(hunk.after)" }
+        if hunk.after.isEmpty { return "Removed: \(hunk.before)" }
+        return "Changed from: \(hunk.before). To: \(hunk.after)"
     }
 }
 
@@ -47,15 +112,18 @@ public struct ProposalCard: View {
     private let proposal: Proposal
     private let onAccept: () -> Void
     private let onReject: () -> Void
+    private let onOpen: (() -> Void)?
 
     public init(
         _ proposal: Proposal,
         onAccept: @escaping () -> Void = {},
-        onReject: @escaping () -> Void = {}
+        onReject: @escaping () -> Void = {},
+        onOpen: (() -> Void)? = nil
     ) {
         self.proposal = proposal
         self.onAccept = onAccept
         self.onReject = onReject
+        self.onOpen = onOpen
     }
 
     public var body: some View {
@@ -68,7 +136,7 @@ public struct ProposalCard: View {
                 if proposal.hunks.count > 1 {
                     Overflow(count: proposal.hunks.count - 1)
                 }
-                Actions(onAccept: onAccept, onReject: onReject)
+                Actions(onAccept: onAccept, onReject: onReject, onOpen: onOpen)
             }
         }
     }
@@ -125,6 +193,7 @@ public struct ProposalCard: View {
     private struct Actions: View {
         let onAccept: () -> Void
         let onReject: () -> Void
+        let onOpen: (() -> Void)?
 
         var body: some View {
             HStack(spacing: Chamfer.Space.snug) {
@@ -133,8 +202,10 @@ public struct ProposalCard: View {
                 Button("Reject", action: onReject)
                     .buttonStyle(ChamferButtonStyle(.secondary))
                 Spacer()
-                Button("Open note") {}
-                    .buttonStyle(ChamferButtonStyle(.quiet))
+                if let onOpen {
+                    Button("Open note", action: onOpen)
+                        .buttonStyle(ChamferButtonStyle(.quiet))
+                }
             }
         }
     }

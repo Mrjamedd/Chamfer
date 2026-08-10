@@ -44,6 +44,33 @@ import Testing
     )
 }
 
+/// History is a stable note action, not a notification badge. It remains in
+/// the gutter for a note with zero queued or recorded changes so users can
+/// discover where future work will appear.
+@Test func noteHistoryControlDependsOnTheOpenNoteRatherThanAChangeCount() {
+    #expect(
+        DashboardNoteHistoryControlVisibility.shouldShow(
+            showingNotes: true,
+            showingHome: false,
+            hasOpenNote: true
+        )
+    )
+    #expect(
+        !DashboardNoteHistoryControlVisibility.shouldShow(
+            showingNotes: true,
+            showingHome: false,
+            hasOpenNote: false
+        )
+    )
+    #expect(
+        !DashboardNoteHistoryControlVisibility.shouldShow(
+            showingNotes: false,
+            showingHome: false,
+            hasOpenNote: true
+        )
+    )
+}
+
 /// The panel builds its own actions rather than reading an environment it does
 /// not have — it is hosted outside the scene tree. If this stops compiling,
 /// the menu bar has lost its route to the window.
@@ -57,11 +84,26 @@ import Testing
     #expect(opened)
 }
 
-/// Deep-linking exists so a future entry point can land on the section it is
-/// about; the plain route still opens where it always did.
-@Test func settingsOpensOnRewritingUnlessAskedOtherwise() {
-    #expect(SettingsView.Section.allCases.first == .rewriting)
-    #expect(SettingsView.Section.allCases.count == 3)
+@MainActor
+@Test func anOpenMenuBarPanelReadsTheLatestDashboardState() {
+    var state = DashboardState(
+        runState: .idle,
+        folders: [],
+        proposals: [],
+        recentlyCleaned: []
+    )
+    let panel = MenuBarPanel(state: { state })
+
+    #expect(panel.presentedState.runState == .idle)
+    state.runState = .paused
+    #expect(panel.presentedState.runState == .paused)
+}
+
+/// The third tab owns only the cross-vault reset; individual choices still
+/// live on the vault they configure.
+@Test func settingsExposesTheCrossVaultResetWithoutMovingVaultEditors() {
+    #expect(SettingsView.Section.allCases == [.privacy, .notifications, .vaults])
+    #expect(SettingsView.Section.allCases.first == .privacy)
 }
 
 // MARK: - Gutter cluster

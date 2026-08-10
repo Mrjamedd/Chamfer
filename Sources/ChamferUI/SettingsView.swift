@@ -1,53 +1,64 @@
 import ChamferCore
 import SwiftUI
 
-/// The global defaults, in their own window.
+/// App-wide privacy, notification and vault-reset controls, in their own window.
 ///
-/// Everything here is what a vault inherits when it has no opinion of its own,
-/// which is why it is not a page in the main window: the main window is for
-/// notes and what is happening to them, and a settings page competing with
-/// them for the same single-page slot is what would make the app feel full.
+/// Vault rewrite behaviour is intentionally absent: each connected vault owns
+/// all of its choices and inherits nothing from here. Keeping these truly
+/// global controls outside the main window leaves that window for notes and
+/// what is happening to them.
 /// Command-comma, native convention, styled in the app's own language so it
 /// does not read as bolted on.
 public struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @Binding var policy: RewritePolicy
     @Binding var preferences: AppPreferences
 
-    @State private var section: Section
-    @State private var showingPreservation = false
+    @LegacyState private var section: Section
+    @LegacyState private var showingClearConfirmation = false
+    @LegacyState private var clearStatus: String?
+
+    /// Set when macOS refused to register the login item — most often because
+    /// it needs approving in System Settings. A toggle that silently does
+    /// nothing is worse than one that says why.
+    private let launchAtLoginNote: String?
+    private let vaultSettingsCount: Int
+    private let clearAllVaultSettings: @MainActor () -> String?
 
     public init(
-        policy: Binding<RewritePolicy>,
         preferences: Binding<AppPreferences>,
-        section: Section = .rewriting
+        section: Section = .privacy,
+        launchAtLoginNote: String? = nil,
+        vaultSettingsCount: Int = 0,
+        clearAllVaultSettings: @escaping @MainActor () -> String? = { nil }
     ) {
-        _policy = policy
         _preferences = preferences
         _section = State(initialValue: section)
+        self.launchAtLoginNote = launchAtLoginNote
+        self.vaultSettingsCount = vaultSettingsCount
+        self.clearAllVaultSettings = clearAllVaultSettings
     }
 
     public enum Section: String, CaseIterable, Identifiable, Sendable {
-        case rewriting
         case privacy
         case notifications
+        case vaults
 
         public var id: String { rawValue }
 
         var title: String {
             switch self {
-            case .rewriting: "Rewriting"
             case .privacy: "Privacy"
             case .notifications: "Notifications"
+            case .vaults: "Vaults"
             }
         }
 
         var symbol: String {
             switch self {
-            case .rewriting: "wand.and.stars"
             case .privacy: "lock"
             case .notifications: "bell"
+            case .vaults: "folder.badge.gearshape"
             }
         }
     }
@@ -55,35 +66,58 @@ public struct SettingsView: View {
     public var body: some View {
         VStack(spacing: 0) {
             tabs
-            ScrollView(.vertical, showsIndicators: false) {
-                Group {
-                    switch section {
-                    case .rewriting: rewriting
-                    case .privacy: privacy
-                    case .notifications: notifications
-                    }
-                }
-                .padding(Chamfer.Space.section)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // Switching section is a change of subject, not a navigation:
-                // the window does not move and neither should its contents.
-                // A cross-fade is also what the reduced-motion curve already
-                // is, so the two branches differ only in duration.
-                .id(section)
-                .transition(.opacity)
-            }
-            .scrollContentBackground(.hidden)
+            content
         }
-        .frame(
-            width: Chamfer.SettingsWindow.width,
-            height: Chamfer.SettingsWindow.height
-        )
+        .frame(width: Chamfer.SettingsWindow.width)
         // The page surface, not the canvas it would float on. This window is
         // the sheet of paper rather than something laid on top of one, so
         // there is nothing here for a canvas to be behind — and every colour
         // the type uses is a `textOnPaper` already.
         .background(Chamfer.Palette.page)
+        .chamferHidesTitleBar()
         .navigationTitle("Chamfer Settings")
+        .confirmationDialog(
+            "Clear all vault settings?",
+            isPresented: $showingClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear All Vault Settings", role: .destructive) {
+                Haptics.commit()
+                clearStatus = clearAllVaultSettings()
+                    ?? "Vault settings cleared. Your vaults remain connected."
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "This clears rewrite behavior, schedules, preservation choices, rules, and pending reviews for every vault. Connections, AI configuration, note files, snapshots, and history are preserved."
+            )
+        }
+    }
+
+    /// Sized to what is in it rather than to a number.
+    ///
+    /// This was a fixed height with a scroll view inside, which meant the short
+    /// tabs ended in a field of empty paper and the long one scrolled — two
+    /// different failures from the same decision. The window now grows and
+    /// shrinks with its contents the way System Settings does, so every tab
+    /// ends where its last row does.
+    private var content: some View {
+        Group {
+            switch section {
+            case .privacy: privacy
+            case .notifications: notifications
+            case .vaults: vaultSettings
+            }
+        }
+        .padding(Chamfer.Space.section)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        // Switching section is a change of subject, not a navigation: the
+        // window does not move and neither should its contents. A cross-fade is
+        // also what the reduced-motion curve already is, so the two branches
+        // differ only in duration.
+        .id(section)
+        .transition(.opacity)
     }
 
     /// The header band: cream above the paper, closed off with the same
@@ -116,77 +150,18 @@ public struct SettingsView: View {
         // it. The capsule bleeds past that line when selected, which is what a
         // selected row is supposed to do.
         .padding(.horizontal, Chamfer.Space.section - Chamfer.Space.regular)
-        .padding(.vertical, Chamfer.Space.regular)
+        .padding(.bottom, Chamfer.Space.regular)
+        // Clearance for the traffic lights, which now sit over this band
+        // rather than in a white strip above it.
+        .padding(.top, Chamfer.SettingsWindow.titleBarClearance)
         .background(Chamfer.Palette.canvasDeep)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Chamfer.Palette.paperStroke)
                 .frame(height: 1)
         }
-    }
-
-    // MARK: Rewriting
-
-    private var rewriting: some View {
-        VStack(alignment: .leading, spacing: Chamfer.Space.roomy) {
-            SettingsHeading(
-                title: "Defaults",
-                detail: "Every vault starts from these. A vault or folder can depart from any of them without affecting the rest."
-            )
-
-            SettingRow(
-                title: PolicyField.mode.title,
-                detail: policy.mode.summary
-            ) {
-                ChamferMenuPicker(
-                    selection: policy.mode,
-                    options: RewriteMode.allCases.map { ($0, $0.title) }
-                ) { policy.mode = $0 }
-            }
-
-            SettingRow(
-                title: PolicyField.application.title,
-                detail: policy.application.detail
-            ) {
-                ChamferMenuPicker(
-                    selection: policy.application,
-                    options: RewriteApplication.allCases.map { ($0, $0.title) }
-                ) { policy.application = $0 }
-            }
-
-            if policy.application == .automatic {
-                InlineFact(
-                    symbol: "exclamationmark.triangle",
-                    text: "This applies rewrites to every vault that hasn't chosen otherwise. A snapshot is taken before each one, and anything applied can be undone from Review."
-                )
-            }
-
-            SettingRow(
-                title: PolicyField.inactivityDelay.title,
-                detail: "How long a note must sit unchanged before Chamfer works on it."
-            ) {
-                ChamferMenuPicker(
-                    selection: policy.inactivityDelay,
-                    options: PolicyEditorChoices.delays
-                ) { policy.inactivityDelay = $0 }
-            }
-
-            SettingRow(
-                title: PolicyField.sweep.title,
-                detail: "A sweep catches notes that never go quiet."
-            ) {
-                ChamferMenuPicker(
-                    selection: policy.sweep,
-                    options: SweepSchedule.choices.map { ($0, $0.title) }
-                ) { policy.sweep = $0 }
-            }
-
-            PreservationSection(
-                preserved: policy.preserved,
-                isExpanded: $showingPreservation,
-                onChange: { policy.preserved = $0 }
-            )
-        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Settings sections")
     }
 
     // MARK: Privacy
@@ -202,50 +177,19 @@ public struct SettingsView: View {
                 title: "Keep everything on this device",
                 detail: "Cloud models are refused, whatever a vault or folder asks for."
             ) {
-                ChamferToggle(isOn: preferences.localProcessingOnly) {
-                    preferences.localProcessingOnly = $0
-                }
+                optionalChoice(
+                    preferences.localProcessingOnly,
+                    label: "Keep everything on this device"
+                ) { preferences.localProcessingOnly = $0 }
             }
 
-            SettingRow(
-                title: PolicyField.fallbackModel.title,
-                detail: fallbackDetail
-            ) {
-                ChamferMenuPicker(
-                    selection: policy.fallbackModelID ?? "",
-                    options: [
-                        ("", "None"),
-                        ("apple.foundation", "Apple on-device"),
-                        ("local.ollama", "Local model"),
-                        ("cloud.sonnet", "Cloud model")
-                    ]
-                ) { policy.fallbackModelID = $0.isEmpty ? nil : $0 }
-            }
-
-            if let fallback = policy.fallbackModelID,
-               ProcessingGuard.isCloud(fallback),
-               !preferences.localProcessingOnly {
-                InlineFact(
-                    symbol: "cloud",
-                    text: "This fallback sends note contents off the device when it runs. It is always recorded in the rewrite's details and in history."
-                )
-            }
-
-            if preferences.localProcessingOnly,
-               let fallback = policy.fallbackModelID,
-               ProcessingGuard.isCloud(fallback) {
+            if preferences.localProcessingOnly == true {
                 InlineFact(
                     symbol: "lock",
-                    text: "This fallback is switched off while everything is kept on-device. Rewrites that need it will report as failed rather than run in the cloud."
+                    text: "A vault set to the cloud model reports as failed rather than running there. The local model is unaffected — it never leaves this Mac in the first place."
                 )
             }
         }
-    }
-
-    private var fallbackDetail: String {
-        policy.fallbackModelID == nil
-            ? "Nothing is tried when the selected model fails. Rewrites report the failure and wait."
-            : "Tried only when the selected model is unavailable or fails."
     }
 
     // MARK: Notifications
@@ -262,22 +206,100 @@ public struct SettingsView: View {
                     title: category.title,
                     detail: category.detail
                 ) {
-                    ChamferToggle(isOn: preferences.notifies(about: category)) { enabled in
+                    optionalChoice(
+                        preferences.notificationChoice(for: category),
+                        label: category.title
+                    ) { choice in
+                        guard let enabled = choice else {
+                            preferences.clearNotificationChoice(category)
+                            return
+                        }
                         preferences.setNotification(category, enabled: enabled)
                     }
                 }
             }
 
-            Divider().overlay(Chamfer.Palette.paperStroke)
+            // Its own heading rather than a bare rule. Opening at login is not
+            // a notification, and while it hung off a divider at the foot of
+            // this list it read as an orphan in somebody else's section.
+            SettingsHeading(
+                title: "When Chamfer runs",
+                detail: "Chamfer watches your notes for as long as it is running, and stops entirely when you quit it."
+            )
+            .padding(.top, Chamfer.Space.snug)
 
             SettingRow(
                 title: "Open at login",
-                detail: "Chamfer watches your notes whenever it is running, and stops entirely when you quit it."
+                detail: "Start watching as soon as you log in, without opening the window."
             ) {
-                ChamferToggle(isOn: preferences.launchAtLogin) {
+                optionalChoice(preferences.launchAtLogin, label: "Open at login") {
                     preferences.launchAtLogin = $0
                 }
             }
+
+            if let launchAtLoginNote {
+                InlineFact(symbol: "exclamationmark.triangle", text: launchAtLoginNote)
+            }
+        }
+    }
+
+    // MARK: Vault reset
+
+    private var vaultSettings: some View {
+        VStack(alignment: .leading, spacing: Chamfer.Space.roomy) {
+            SettingsHeading(
+                title: "Reset vault behavior",
+                detail: "Keep every vault connected while removing the choices that control how Chamfer processes it."
+            )
+
+            SettingRow(
+                title: "Clear all vault settings",
+                detail: vaultSettingsCount == 0
+                    ? "No vault currently has processing settings."
+                    : "Clears stored processing settings from \(vaultSettingsCount.formatted()) vault\(vaultSettingsCount == 1 ? "" : "s")."
+            ) {
+                Button("Clear All Vault Settings", role: .destructive) {
+                    showingClearConfirmation = true
+                }
+                .buttonStyle(ChamferButtonStyle(.quiet))
+                .disabled(vaultSettingsCount == 0)
+            }
+
+            InlineFact(
+                symbol: "checkmark.shield",
+                text: "Vault connections, model and provider settings, API keys, notes, snapshots, and history are never cleared by this action."
+            )
+
+            if let clearStatus {
+                let succeeded = clearStatus.hasPrefix("Vault settings cleared")
+                InlineFact(
+                    symbol: succeeded
+                        ? "checkmark.circle"
+                        : "exclamationmark.triangle",
+                    tint: succeeded
+                        ? Chamfer.Palette.positive
+                        : Chamfer.Palette.danger,
+                    text: clearStatus
+                )
+            }
+        }
+    }
+
+    private func optionalChoice(
+        _ choice: Bool?,
+        label: String,
+        onChange: @escaping (Bool?) -> Void
+    ) -> some View {
+        ChamferMenuPicker(
+            selection: choice.map { $0 ? "on" : "off" } ?? "",
+            options: [
+                ("", "Not configured"),
+                ("on", "On"),
+                ("off", "Off")
+            ],
+            label: label
+        ) { selection in
+            onChange(selection.isEmpty ? nil : selection == "on")
         }
     }
 }
@@ -311,7 +333,7 @@ private struct SettingsHeading: View {
 
 private struct SettingsTab: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovered = false
+    @LegacyState private var isHovered = false
 
     let section: SettingsView.Section
     let isSelected: Bool
@@ -341,5 +363,10 @@ private struct SettingsTab: View {
             Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
             value: isSelected
         )
+        // Which tab is open is carried entirely by an ink capsule, which
+        // VoiceOver cannot see. Said outright, along with the trait that makes
+        // the rotor treat these three as a group of choices.
+        .accessibilityLabel(section.title)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 }
