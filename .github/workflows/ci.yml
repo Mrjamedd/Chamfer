@@ -1,0 +1,75 @@
+name: CI
+
+# Every push and every pull request. This is the half of the pipeline that
+# never ships anything: it builds Chamfer and runs the suite, and that is all.
+# Releasing is a separate workflow on a tag, so unfinished work on a branch
+# cannot reach anybody's Mac by being pushed.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    # macOS 26, not 15. The macos-15 image carries Xcode 26, so the package
+    # builds there — and then nothing can run, because a bundle built for
+    # macOS 26 cannot be loaded by a machine running 15. The tests failed with
+    # "built for macOS 26.0 which is newer than running OS", which is a
+    # sentence about the runner and not about the code.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      # `/Applications/Xcode.app` is whichever version the image made
+      # default, and on macos-15 that is Swift 6.1 — older than this package's
+      # tools version, which fails with a message about the manifest rather
+      # than about the toolchain. Pick the newest one actually installed.
+      - name: Select a toolchain new enough for the package
+        run: |
+          set -euo pipefail
+          echo "Xcodes on this runner:"
+          ls -d /Applications/Xcode*.app
+          NEWEST="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          echo "Selecting $NEWEST"
+          sudo xcode-select -switch "$NEWEST"
+          swift --version
+          REQUIRED="6.2"
+          FOUND="$(swift --version 2>&1 | sed -nE 's/.*Swift version ([0-9]+\.[0-9]+).*/\1/p' | head -1)"
+          if [ "$(printf '%s\n%s\n' "$REQUIRED" "$FOUND" | sort -V | head -1)" != "$REQUIRED" ]; then
+            echo "::error::Chamfer needs Swift $REQUIRED; the newest toolchain here is $FOUND."
+            exit 1
+          fi
+
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Build
+        run: swift build --build-tests
+
+      # The live tests talk to an Ollama that is not on a CI runner and take
+      # minutes when they are. They are tagged so they can be excluded here and
+      # run deliberately on a machine that has a model.
+      - name: Test
+        run: Scripts/test.sh --skip liveModel --skip trace
+
+      # A release is only ever as good as the bundle, so the thing the release
+      # workflow will build is built here too — unsigned, and thrown away.
+      - name: Package a bundle
+        run: Scripts/package.sh 0.0.0 ${{ github.run_number }}
+
+      - name: Check the bundle is a bundle
+        run: |
+          APP=.build/artifacts/Chamfer.app
+          test -x "$APP/Contents/MacOS/Chamfer"
+          test -f "$APP/Contents/Info.plist"
+          test -d "$APP/Contents/Frameworks/Sparkle.framework"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Contents/Info.plist"

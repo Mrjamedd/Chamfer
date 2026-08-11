@@ -9,7 +9,7 @@ import SwiftUI
 /// Hovering does not recolour it. It rises and its shadow deepens — the card
 /// stays beige throughout, so pointing at something never changes what it says.
 public struct Card<Content: View>: View {
-    @State private var isHovered = false
+    @LegacyState private var isHovered = false
 
     private let content: Content
     private let padding: CGFloat
@@ -114,7 +114,8 @@ public struct ChamferButtonStyle: ButtonStyle {
     /// Not named `Body` — that collides with `ButtonStyle`'s associated type.
     private struct StyledLabel: View {
         @Environment(\.chamferSurface) private var surface
-        @State private var isHovered = false
+        @LegacyState private var isHovered = false
+        @FocusState private var isFocused: Bool
 
         let configuration: Configuration
         let emphasis: Emphasis
@@ -144,7 +145,21 @@ public struct ChamferButtonStyle: ButtonStyle {
                     shape.strokeBorder(border, lineWidth: 1)
                 )
                 .chamferHoverRing(isHovered, radius: Chamfer.Radius.small)
+                // Every button in the app goes through this style, so the
+                // keyboard gets its treatment here once rather than at ninety
+                // call sites. The system's own ring is switched off: it draws a
+                // blue rectangle that knows nothing about the shape underneath.
+                .focusable()
+                .focusEffectDisabled()
+                .focused($isFocused)
+                .chamferFocusRing(isFocused, radius: Chamfer.Radius.small)
                 .onHover { isHovered = $0 }
+                // Dimming alone reads as the button being disabled rather than
+                // being pushed. The give under the pointer is what says the
+                // press landed. Matched to the sheet's buttons, not taken to
+                // the 0.95 the guideline suggests — at this size that reads as
+                // a flinch, and the two button styles appear side by side.
+                .scaleEffect(configuration.isPressed ? 0.97 : 1)
                 .opacity(configuration.isPressed ? 0.72 : 1)
                 .animation(Chamfer.Motion.quick, value: isHovered)
                 .animation(Chamfer.Motion.quick, value: configuration.isPressed)

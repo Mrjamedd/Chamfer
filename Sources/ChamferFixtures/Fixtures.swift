@@ -17,6 +17,7 @@ public enum Scenario: String, CaseIterable, Sendable, Identifiable {
     case rewriteUnavailable
     case folderUnreachable
     case failed
+    case vaults
 
     public var id: String { rawValue }
 
@@ -32,6 +33,7 @@ public enum Scenario: String, CaseIterable, Sendable, Identifiable {
         case .rewriteUnavailable: "Rewrites off"
         case .folderUnreachable: "Folder gone"
         case .failed: "Failed"
+        case .vaults: "Vaults and history"
         }
     }
 
@@ -44,9 +46,10 @@ public enum Scenario: String, CaseIterable, Sendable, Identifiable {
         case .hugeNote: "A 12,400-word note with 40 hunks in one proposal."
         case .codeHeavy: "Mostly code fences, so masking leaves almost nothing to rewrite."
         case .sweeping: "Initial sweep in progress with determinate progress."
-        case .rewriteUnavailable: "Apple Intelligence off. Rules still run; half the UI is meaningless."
+        case .rewriteUnavailable: "The local model is not installed. Rules still run; half the UI is meaningless."
         case .folderUnreachable: "External disk unplugged, bookmark dead."
         case .failed: "Something broke and the user has to be told."
+        case .vaults: "Three vaults that disagree, 214 history entries, and every awkward queue state at once."
         }
     }
 }
@@ -58,6 +61,9 @@ public enum Fixtures {
 
     public static func state(for scenario: Scenario) -> DashboardState {
         switch scenario {
+        case .vaults:
+            vaultScenario()
+
         case .firstRun:
             DashboardState(runState: .idle, folders: [], proposals: [], recentlyCleaned: [])
 
@@ -133,7 +139,7 @@ public enum Fixtures {
         case .rewriteUnavailable:
             DashboardState(
                 runState: .rewritingUnavailable(
-                    reason: "Apple Intelligence is turned off in System Settings."
+                    reason: "Ollama isn’t running, so the local model can’t be reached."
                 ),
                 folders: [vaultFolder(noteCount: 412)],
                 proposals: [],

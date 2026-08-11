@@ -5,8 +5,8 @@ import SwiftUI
 
 /// Every component, every state, on one scrolling page.
 struct ComponentCatalog: View {
-    @State private var barSelection = "notes"
-    @State private var barIsSearching = false
+    @LegacyState private var barSelection = "notes"
+    @LegacyState private var barIsSearching = false
 
     private let typical = Fixtures.state(for: .typical)
     private let unreachable = Fixtures.state(for: .folderUnreachable)
@@ -31,7 +31,7 @@ struct ComponentCatalog: View {
                 specimen("Banners") {
                     VStack(spacing: Chamfer.Space.regular) {
                         RunStateBanner(.rewritingUnavailable(
-                            reason: "Apple Intelligence is turned off in System Settings."
+                            reason: "Ollama isn’t running, so the local model can’t be reached."
                         ))
                         RunStateBanner(.failed(
                             message: "Couldn't write to “Meeting notes.md” — the file is read-only."
@@ -104,8 +104,13 @@ struct ComponentCatalog: View {
     private var bar: some View {
         VStack(spacing: Chamfer.Space.loose) {
             // Normally only visible while the pointer is in the gutter above
-            // the page, so it is pinned open here to be inspectable.
-            FloatingCloseButton {}
+            // the page, so they are pinned open here to be inspectable. Shown
+            // side by side because they share one shape and appear together —
+            // a divergence between them is the thing worth catching here.
+            HStack(spacing: Chamfer.Space.loose) {
+                FloatingSettingsButton {}
+                FloatingCloseButton {}
+            }
             barControl
         }
         .frame(maxWidth: .infinity, alignment: .center)

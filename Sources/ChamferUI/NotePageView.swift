@@ -1,79 +1,71 @@
 import ChamferCore
 import SwiftUI
 
-/// The note itself, set as a printed page: white, black serif type, wide
-/// margins, floating on the canvas.
-public struct NotePageView: View {
-    private let document: NoteDocument
+/// A deliberately plain editor for raw Markdown. Its model is owned by the
+/// dashboard so an unsaved draft and any write error survive page navigation.
+struct NotePageView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @Bindable var model: NoteEditorModel
 
-    public init(_ document: NoteDocument) {
-        self.document = document
-    }
+    let onTextChange: (String) -> Void
 
-    public var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(Block.parse(document.text).enumerated()), id: \.offset) { _, block in
-                    view(for: block)
-                }
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            HStack(spacing: 0) {
+                Spacer(minLength: Chamfer.Page.margin)
+
+                PlainTextEditor(text: $model.text)
+                    .frame(maxWidth: Chamfer.Page.measure)
+                    .accessibilityLabel("Note text")
+
+                Spacer(minLength: Chamfer.Page.margin)
             }
-            .frame(maxWidth: Chamfer.Page.measure, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.horizontal, Chamfer.Page.margin)
-            .padding(.top, 64)
-            .padding(.bottom, 56)
-        }
-        .scrollContentBackground(.hidden)
-        .background(Chamfer.Palette.page)
-    }
+            .padding(.top, 58)
+            .padding(.bottom, 50)
 
-    @ViewBuilder
-    private func view(for block: Block) -> some View {
-        switch block {
-        case let .title(text):
-            Text(text)
-                .font(Chamfer.TypeScale.pageTitle)
-                .foregroundStyle(Chamfer.Palette.pageText)
-                .lineSpacing(2)
-                .padding(.bottom, Chamfer.Space.loose)
-        case let .heading(text):
-            Text(text)
-                .font(Chamfer.TypeScale.pageHeading)
-                .foregroundStyle(Chamfer.Palette.pageText)
-                .padding(.top, Chamfer.Space.loose)
-                .padding(.bottom, Chamfer.Space.snug)
-        case let .paragraph(text):
-            Text(text)
-                .font(Chamfer.TypeScale.pageBody)
-                .foregroundStyle(Chamfer.Palette.pageText)
-                .lineSpacing(9)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.bottom, Chamfer.Space.roomy)
+            if let message = model.saveErrorMessage {
+                Text(message)
+                    .font(Chamfer.TypeScale.caption)
+                    .foregroundStyle(Chamfer.Palette.danger)
+                    .padding(.leading, Chamfer.Page.margin)
+                    .padding(.bottom, 24)
+                    .accessibilityLabel("Autosave error: \(message)")
+            }
+        }
+        .background(Chamfer.Palette.page)
+        .onChange(of: model.text) {
+            onTextChange(model.text)
+            model.textDidChange()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase != .active else { return }
+            model.flush()
+        }
+        .onDisappear {
+            model.flush()
         }
     }
 }
 
-/// The little of Markdown the page needs to render. Deliberately not a full
-/// parser — headings and paragraphs are what a note is made of, and anything
-/// more belongs in the rule engine, not the view.
-enum Block {
-    case title(String)
-    case heading(String)
-    case paragraph(String)
+/// Fixture notes without a real file remain selectable and copyable, but are
+/// visibly read-only instead of accepting edits that cannot be persisted.
+struct ReadOnlyNotePageView: View {
+    let document: NoteDocument
 
-    static func parse(_ text: String) -> [Block] {
-        text
-            .components(separatedBy: "\n\n")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .map { chunk in
-                if chunk.hasPrefix("## ") {
-                    .heading(String(chunk.dropFirst(3)))
-                } else if chunk.hasPrefix("# ") {
-                    .title(String(chunk.dropFirst(2)))
-                } else {
-                    .paragraph(chunk)
-                }
-            }
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            Text(document.text)
+                .font(Chamfer.TypeScale.pageBody)
+                .foregroundStyle(Chamfer.Palette.pageText)
+                .lineSpacing(7)
+                .textSelection(.enabled)
+                .frame(maxWidth: Chamfer.Page.measure, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, Chamfer.Page.margin)
+                .padding(.top, 64)
+                .padding(.bottom, 56)
+        }
+        .scrollContentBackground(.hidden)
+        .background(Chamfer.Palette.page)
     }
 }

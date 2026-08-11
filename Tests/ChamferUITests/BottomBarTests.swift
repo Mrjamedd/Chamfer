@@ -22,24 +22,24 @@ import Testing
 
     #expect(
         DashboardTabGesture.destination(
-            from: "notes",
+            from: "review",
             direction: .left,
             orderedIDs: tabs
-        ) == "review"
+        ) == "notes"
     )
     #expect(
         DashboardTabGesture.destination(
             from: "review",
             direction: .right,
             orderedIDs: tabs
-        ) == "notes"
+        ) == "models"
     )
     #expect(
         DashboardTabGesture.destination(
-            from: "models",
+            from: "notes",
             direction: .left,
             orderedIDs: tabs
-        ) == "models"
+        ) == "notes"
     )
 }
 
@@ -48,7 +48,7 @@ import Testing
         from: "notes",
         isSearching: true,
         showingHome: true,
-        direction: .left,
+        direction: .right,
         orderedIDs: ["notes", "review", "models"]
     )
 

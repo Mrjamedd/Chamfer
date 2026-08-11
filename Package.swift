@@ -16,18 +16,33 @@ let package = Package(
         .library(name: "ChamferCore", targets: ["ChamferCore"]),
         .library(name: "ChamferUI", targets: ["ChamferUI"])
     ],
+    dependencies: [
+        // Updates for an app distributed outside the App Store. Pinned to a
+        // minor version: an updater is the one component whose own bugs ship
+        // themselves to everybody.
+        .package(
+            url: "https://github.com/sparkle-project/Sparkle.git",
+            from: "2.9.5"
+        )
+    ],
     targets: [
         .executableTarget(
             // Menu bar shell, review window, settings.
             name: "Chamfer",
-            dependencies: ["ChamferCore", "ChamferUI", "ChamferWatch", "ChamferRewrite"],
+            dependencies: [
+                "ChamferCore",
+                "ChamferUI",
+                "ChamferWatch",
+                "ChamferRewrite",
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             path: "Sources/Chamfer"
         ),
         .executableTarget(
-            // Stands in for the Xcode preview canvas: every component in every
-            // state, driven by fixtures. This is the design iteration loop.
+            // Source-built dashboard and component gallery. Its example note
+            // is backed by a real autosaved Markdown file.
             name: "ChamferGallery",
-            dependencies: ["ChamferUI", "ChamferFixtures"],
+            dependencies: ["ChamferUI", "ChamferFixtures", "ChamferWatch"],
             path: "Sources/ChamferGallery"
         ),
         .target(
@@ -38,10 +53,10 @@ let package = Package(
         ),
         .target(
             // The design system: tokens, primitives, components, and views
-            // composed from them. Depends only on ChamferCore, so it cannot
-            // reach for app state and stays reusable by construction.
+            // composed from them. It owns the Models runtime presentation and
+            // talks to rewrite clients only through ChamferRewrite.
             name: "ChamferUI",
-            dependencies: ["ChamferCore"],
+            dependencies: ["ChamferCore", "ChamferRewrite"],
             path: "Sources/ChamferUI"
         ),
         .target(
@@ -75,13 +90,20 @@ let package = Package(
         ),
         .testTarget(
             name: "ChamferRewriteTests",
-            dependencies: ["ChamferRewrite"],
+            dependencies: ["ChamferCore", "ChamferRewrite"],
             path: "Tests/ChamferRewriteTests"
         ),
         .testTarget(
             name: "ChamferUITests",
-            dependencies: ["ChamferCore", "ChamferFixtures", "ChamferUI"],
+            dependencies: [
+                "ChamferCore", "ChamferFixtures", "ChamferRewrite", "ChamferUI"
+            ],
             path: "Tests/ChamferUITests"
+        ),
+        .testTarget(
+            name: "ChamferTests",
+            dependencies: ["Chamfer", "ChamferCore", "ChamferRewrite", "ChamferWatch"],
+            path: "Tests/ChamferTests"
         )
     ]
 )

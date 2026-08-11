@@ -36,6 +36,27 @@ public extension Chamfer {
         public static let ring = rgb(0xE79BC0).opacity(0.38)
         public static let barRing = rgb(0xE79BC0).opacity(0.20)
         public static let ringWidth: CGFloat = 1
+        /// The same pink, drawn to be seen rather than felt.
+        ///
+        /// Keyboard focus has to be unambiguous in a way hover does not: the
+        /// pointer user knows where they are pointing, and the keyboard user
+        /// only knows what the ring tells them.
+        public static let focusRing = rgb(0xE079AC)
+        public static let focusRingWidth: CGFloat = 2
+
+        /// A region set very slightly into the page.
+        ///
+        /// Barely a shade off `page` on purpose: enough to group what sits on
+        /// it, not enough to read as a card. `paperSunken` was the nearest
+        /// existing value and is twice as dark as this wants — four of those
+        /// stacked in a panel would look like boxed settings rows, which is
+        /// exactly what this is avoiding.
+        public static let pageInset = rgb(0xFBF6EC)
+        /// The hairline around an inset region, when it needs one at all.
+        public static let pageInsetStroke = rgb(0xF1E7D6)
+        /// Amber at the strength a resting surface can carry.
+        public static let attentionSoft = rgb(0xF0A020).opacity(0.10)
+        public static let attentionRing = rgb(0xF0A020).opacity(0.40)
 
         // The note page: the lightest surface, with black type on it.
         public static let page = rgb(0xFFFCF7)
@@ -62,6 +83,10 @@ public extension Chamfer {
         public static let pinkSoft = rgb(0xF6D2E3)
         public static let pinkOnInk = rgb(0xFF9CC6)
 
+        /// The "waiting on you" amber, following Apple's warning badge rather
+        /// than inventing a colour. Not the brass accent: brass is decoration
+        /// and this has to be noticed.
+        public static let attention = rgb(0xF0A020)
         public static let positive = rgb(0x3B7A55)
         public static let positiveSoft = rgb(0xDCEADF)
         public static let positiveOnInk = rgb(0x7CCB9E)
@@ -70,10 +95,20 @@ public extension Chamfer {
         public static let dangerOnInk = rgb(0xF0806C)
 
         // Diff tints, which need separate values per surface to stay legible.
+        //
+        // Two strengths each. The wash goes behind the whole line so it is
+        // clear which side is which; the emphasis goes behind the words that
+        // actually moved. The gap between them is what carries the meaning —
+        // wide enough to find at a glance, narrow enough that a line whose
+        // every word changed does not turn into a solid block.
         public static let removedOnPaper = rgb(0xF6E2DC)
         public static let addedOnPaper = rgb(0xE1EDE2)
         public static let removedOnInk = rgb(0x30201C)
         public static let addedOnInk = rgb(0x1D2C22)
+        public static let removedEmphasisOnPaper = rgb(0xEEC3B7)
+        public static let addedEmphasisOnPaper = rgb(0xC0DCC5)
+        public static let removedEmphasisOnInk = rgb(0x4A2C24)
+        public static let addedEmphasisOnInk = rgb(0x27452F)
 
         static func rgb(_ value: UInt32) -> Color {
             Color(
@@ -195,6 +230,21 @@ public enum SurfaceMode: Sendable, Hashable, CaseIterable {
         case .ink: Chamfer.Palette.addedOnInk
         }
     }
+
+    /// Behind the words that actually changed, over `removedFill`.
+    public var removedEmphasis: Color {
+        switch self {
+        case .paper: Chamfer.Palette.removedEmphasisOnPaper
+        case .ink: Chamfer.Palette.removedEmphasisOnInk
+        }
+    }
+
+    public var addedEmphasis: Color {
+        switch self {
+        case .paper: Chamfer.Palette.addedEmphasisOnPaper
+        case .ink: Chamfer.Palette.addedEmphasisOnInk
+        }
+    }
 }
 
 // MARK: - Space, shape, motion
@@ -221,8 +271,38 @@ public extension Chamfer {
         public static let quickDuration: TimeInterval = 0.10
         public static let interactiveDuration: TimeInterval = 0.20
         public static let navigationDuration: TimeInterval = 0.30
+        public static let reducedDuration: TimeInterval = 0.12
 
-        public static let quick = Animation.easeOut(duration: quickDuration)
+        /// A spring rather than an ease, at the same 100ms. At this length the
+        /// two are all but indistinguishable standing still — the difference
+        /// shows when you interrupt one. An ease restarts from a standstill
+        /// every time it is retargeted, so flicking the pointer on and off
+        /// something makes it stutter; a spring carries its velocity across and
+        /// simply changes direction. Critically damped, so it never overshoots.
+        public static let quick = Animation.spring(
+            duration: quickDuration,
+            bounce: 0
+        )
+        /// What every `reduceMotion` branch animates with.
+        ///
+        /// Deliberately its own token rather than an alias for `quick`. The two
+        /// answer different questions — "how fast should this feel" and "how
+        /// little should this move" — and while they shared a value, retuning
+        /// the app's response silently retuned its accessibility behaviour.
+        ///
+        /// Symmetric easing, because what is left under reduced motion is a
+        /// cross-fade: a fade has no direction, so it should not be shaped like
+        /// something arriving.
+        public static let reduced = Animation.easeInOut(duration: reducedDuration)
+
+        /// Picks the reduced curve when the setting is on, the given one when
+        /// it is off. Saves every call site spelling out the same ternary.
+        public static func reduce(
+            _ animation: Animation,
+            when reduceMotion: Bool
+        ) -> Animation {
+            reduceMotion ? reduced : animation
+        }
         /// The rise and pink bloom when a card is hovered.
         public static let lift = Animation.spring(
             duration: interactiveDuration,
@@ -259,7 +339,45 @@ public extension Chamfer {
     /// pulled out of proportion.
     enum Window {
         public static let width: CGFloat = 780
-        public static let height: CGFloat = 860
+        /// What the composition was drawn at.
+        public static let designedHeight: CGFloat = 860
+        /// Never shorter than this. Below it the bar starts crowding the page
+        /// and the proportion stops being a page at all.
+        public static let minimumHeight: CGFloat = 640
+        /// Cream left between the window and the edge of the usable screen, so
+        /// the bar reads as floating rather than as resting on the Dock.
+        private static let breathingRoom: CGFloat = 32
+
+        /// The designed height, or as much of it as the screen actually has.
+        ///
+        /// `visibleFrame` already excludes the menu bar and the Dock, so this
+        /// is the space genuinely available. A hardcoded 860 was taller than a
+        /// laptop display leaves once the Dock is showing, and the first thing
+        /// to go was the bottom bar — the app's only navigation.
+        public static var height: CGFloat {
+            guard let visible = NSScreen.main?.visibleFrame else {
+                return designedHeight
+            }
+            return min(
+                designedHeight,
+                max(minimumHeight, visible.height - breathingRoom)
+            )
+        }
+    }
+
+    /// Settings is its own window and deliberately a smaller one: it holds
+    /// rows of controls rather than a page of prose, so the reading measure
+    /// that governs `Window` would leave it mostly empty. Shared with the
+    /// gallery so the harness shows it at the size it actually ships at.
+    enum SettingsWindow {
+        public static let width: CGFloat = 540
+        /// Room above the tabs for the traffic lights, now that the window has
+        /// no title bar for them to sit in.
+        public static let titleBarClearance: CGFloat = 38
+        /// What the gallery shows the window at, since a harness has to pick
+        /// something. The real window has no fixed height at all — it is as
+        /// tall as whichever tab is open.
+        public static let previewHeight: CGFloat = 620
     }
 }
 
@@ -281,6 +399,10 @@ public extension Chamfer {
         public static let pageTitle = Font.system(size: 40, weight: .bold, design: .serif)
         public static let pageHeading = Font.system(size: 23, weight: .semibold, design: .serif)
         public static let pageBody = Font.system(size: 17, weight: .regular, design: .serif)
+        /// The line under a page's heading: the serif voice, but stepped down
+        /// far enough that it explains the heading rather than competing with
+        /// it. Below `pageBody` because it is not prose to be read at length.
+        public static let pageSubtitle = Font.system(size: 15, weight: .regular, design: .serif)
     }
 }
 

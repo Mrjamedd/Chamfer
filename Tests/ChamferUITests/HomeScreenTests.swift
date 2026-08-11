@@ -23,21 +23,94 @@ import Testing
     #expect(Set(morning + afternoon + evening).count >= 20)
 }
 
-@Test func greetingChangesBetweenRotationWindows() throws {
+@Test func theGreetingAdvancesOnceEveryFortyFiveMinutesTheAppIsOpen() {
+    let opened = Date(timeIntervalSince1970: 1_800_000_000)
+    let schedule = HomeGreetingSchedule(openedAt: opened)
+
+    #expect(schedule.window(at: opened) == 0)
+    #expect(schedule.window(at: opened.addingTimeInterval(44 * 60)) == 0)
+    #expect(schedule.window(at: opened.addingTimeInterval(45 * 60)) == 1)
+    #expect(schedule.window(at: opened.addingTimeInterval(89 * 60)) == 1)
+    #expect(schedule.window(at: opened.addingTimeInterval(90 * 60)) == 2)
+    // A session is the unit, so the clock on the wall never brings a window
+    // forward on its own.
+    #expect(schedule.window(at: opened.addingTimeInterval(-3_600)) == 0)
+}
+
+/// Consecutive windows have to actually read differently, or the interval is a
+/// number with nothing behind it.
+@Test func consecutiveWindowsProduceDifferentLines() throws {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
-
-    let first = try #require(
-        calendar.date(from: DateComponents(year: 2026, month: 7, day: 30, hour: 9, minute: 0))
-    )
-    let second = try #require(
-        calendar.date(from: DateComponents(year: 2026, month: 7, day: 30, hour: 9, minute: 12))
+    let date = try #require(
+        calendar.date(from: DateComponents(year: 2026, month: 7, day: 30, hour: 9))
     )
 
-    #expect(
-        HomeGreetingRotation.text(at: first, name: "Anthony", calendar: calendar)
-            != HomeGreetingRotation.text(at: second, name: "Anthony", calendar: calendar)
+    let lines = (0..<6).map {
+        HomeGreetingRotation.text(
+            window: $0,
+            at: date,
+            name: "Anthony",
+            calendar: calendar
+        )
+    }
+
+    #expect(Set(lines).count == lines.count)
+    #expect(zip(lines, lines.dropFirst()).allSatisfy { $0 != $1 })
+}
+
+/// The rule the request turns on: the line may only move when the page is not
+/// being looked at. `resolve` is the only thing that moves it, and the view
+/// calls it on appear alone.
+@Test func theGreetingHoldsStillUntilItIsResolvedAgain() {
+    let opened = Date(timeIntervalSince1970: 1_800_000_000)
+    var schedule = HomeGreetingSchedule(openedAt: opened)
+
+    let first = schedule.resolve(at: opened, name: "Anthony")
+    #expect(schedule.shownWindow == 0)
+
+    // Two hours of staring at the home screen. The window has come due twice
+    // and the shown line has not moved, because nothing resolved it.
+    let later = opened.addingTimeInterval(2 * 60 * 60)
+    #expect(schedule.isDue(at: later))
+    #expect(schedule.shownWindow == 0)
+
+    // Leaving and coming back is what collects it.
+    let second = schedule.resolve(at: later, name: "Anthony")
+    #expect(schedule.shownWindow == 2)
+    #expect(second != first)
+    #expect(!schedule.isDue(at: later))
+}
+
+@Test func resolvingTwiceInsideOneWindowKeepsTheSameLine() {
+    let opened = Date(timeIntervalSince1970: 1_800_000_000)
+    var schedule = HomeGreetingSchedule(openedAt: opened)
+
+    let first = schedule.resolve(at: opened, name: "Anthony")
+    let again = schedule.resolve(
+        at: opened.addingTimeInterval(44 * 60),
+        name: "Anthony"
     )
+
+    // Bouncing in and out of the home screen must not shuffle the greeting.
+    #expect(first == again)
+    #expect(schedule.shownWindow == 0)
+}
+
+@MainActor
+@Test func theClockIsSharedAcrossVisitsRatherThanRestartingOnEachOne() {
+    let opened = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = HomeGreetingClock(openedAt: opened)
+
+    let first = clock.greeting(at: opened, name: "Anthony")
+    let sameVisit = clock.greeting(at: opened.addingTimeInterval(60), name: "Anthony")
+    let afterAnHour = clock.greeting(
+        at: opened.addingTimeInterval(46 * 60),
+        name: "Anthony"
+    )
+
+    #expect(first == sameVisit)
+    #expect(afterAnHour != first)
 }
 
 @Test func homeCardsAreUniqueAndCarryUsefulPreviewText() {
@@ -151,31 +224,13 @@ import Testing
     #expect(featured.document.url == meaningfulNote.url)
 }
 
-@Test func typicalWallUsesARestrainedDiamondHierarchy() throws {
-    let state = Fixtures.state(for: .typical)
-    let cards = HomeNoteCardModel.cards(from: state)
-    let placements = HomeNoteWallLayout.placements(for: cards)
-    let featuredCard = try #require(cards.first { $0.isFeatured })
-    let featured = try #require(placements.first { $0.id == featuredCard.id })
-    let cleanedCard = try #require(cards.first { $0.source == .cleaned })
-    let cleaned = try #require(placements.first { $0.id == cleanedCard.id })
-
-    #expect(featuredCard.document.url == state.pendingProposals[1].note.url)
-    #expect(featured.x > 0.48 && featured.x < 0.58)
-    #expect(featured.y > 0.22 && featured.y < 0.34)
-    #expect(featured.scale >= 1.08 && featured.scale <= 1.12)
-    #expect(abs(featured.rotation) < 3)
-    #expect(cleaned.y > featured.y)
-    #expect(cleaned.scale < featured.scale)
-    #expect(placements.allSatisfy { abs($0.rotation) <= 3 })
-}
-
 @Test func everyVisibleNoteReceivesAWallPlacement() {
     let cards = HomeNoteCardModel.cards(from: Fixtures.state(for: .flooded))
     let placements = HomeNoteWallLayout.placements(for: cards)
 
-    #expect(placements.count == cards.count)
-    #expect(Set(placements.map(\.id)) == Set(cards.map(\.id)))
+    #expect(placements.count == min(cards.count, HomeNoteWallLayout.slotCount))
+    #expect(Set(placements.map(\.id)).isSubset(of: Set(cards.map(\.id))))
+    #expect(Set(placements.map(\.id)).count == placements.count)
 }
 
 @Test func typicalWallContainsSixNotesWithDistinctHierarchyRoles() {
@@ -188,50 +243,138 @@ import Testing
     #expect(cards.filter { $0.role == .background }.count == 1)
 }
 
-@Test func sixNoteConstellationKeepsQuietNotesLowAndOneSupportAtLowerRight() throws {
+/// The wall is a scatter, not a pile. This is the check that keeps it one.
+///
+/// The hand-placed version read well at the height it was drawn at and
+/// collided at every other: two slots sat 0.14 apart across a canvas where a
+/// card is 0.26 wide, so notes covered each other's titles. Nothing in the
+/// coordinates said so, which is why the rule is now measured rather than
+/// eyeballed — at the shortest window Chamfer allows as well as the tallest.
+@Test func noTwoNotesOnTheWallEverOverlap() {
     let cards = HomeNoteCardModel.cards(from: Fixtures.state(for: .typical))
-    let placements = HomeNoteWallLayout.placements(for: cards)
-    let lowerRightCard = try #require(
-        cards.filter { $0.role == .supporting }.last
-    )
-    let lowerRight = try #require(placements.first { $0.id == lowerRightCard.id })
-    let cleanedCard = try #require(cards.first { $0.role == .recentlyCleaned })
-    let cleaned = try #require(placements.first { $0.id == cleanedCard.id })
-    let backgroundCard = try #require(cards.first { $0.role == .background })
-    let background = try #require(placements.first { $0.id == backgroundCard.id })
 
-    #expect(lowerRight.x > 0.65 && lowerRight.y > 0.55)
-    #expect(cleaned.x > 0.24 && cleaned.x < 0.50 && cleaned.y > 0.58)
-    #expect(background.x < 0.20)
-    #expect(background.scale < cleaned.scale)
-    #expect(background.depth < cleaned.depth)
+    for canvas in [
+        CGSize(width: 736, height: 300),
+        CGSize(width: 736, height: 420),
+        CGSize(width: 736, height: 560)
+    ] {
+        let placements = HomeNoteWallLayout.placements(for: cards, canvas: canvas)
+        for (index, placement) in placements.enumerated() {
+            for other in placements[(index + 1)...] {
+                #expect(
+                    !HomeNoteWallLayout.overlaps(placement, other, canvas: canvas),
+                    "\(placement.id) overlaps \(other.id) at \(canvas)"
+                )
+            }
+        }
+    }
 }
 
-@Test func featuredNoteSitsAboveItsTwoUpperSupports() throws {
+/// And stays on the wall it is scattered across.
+@Test func everyNoteStaysInsideTheCanvas() {
+    let cards = HomeNoteCardModel.cards(from: Fixtures.state(for: .typical))
+    let canvas = CGSize(width: 736, height: 420)
+
+    for placement in HomeNoteWallLayout.placements(for: cards, canvas: canvas) {
+        let halfWidth = HomeNoteWallLayout.cardSize.width * placement.scale / 2
+        let halfHeight = HomeNoteWallLayout.cardSize.height * placement.scale / 2
+        #expect(placement.x * canvas.width - halfWidth >= -1)
+        #expect(placement.x * canvas.width + halfWidth <= canvas.width + 1)
+        #expect(placement.y * canvas.height - halfHeight >= -1)
+        #expect(placement.y * canvas.height + halfHeight <= canvas.height + 1)
+    }
+}
+
+/// Not overlapping is the floor, not the goal. A wall where every note is the
+/// same size at the same angle on the same spacing reads as a contact sheet —
+/// which is what the lattice produced before the notes were knocked off it.
+@Test func theWallIsIrregularEnoughToLookPlacedRatherThanLaidOut() {
+    let cards = HomeNoteCardModel.cards(from: Fixtures.state(for: .typical))
+    let canvas = CGSize(width: 736, height: 420)
+    let placements = HomeNoteWallLayout.placements(for: cards, canvas: canvas)
+
+    #expect(placements.count == 6)
+
+    // Angles vary, and stay subtle. Past a couple of degrees it stops reading
+    // as a note somebody pressed on and starts reading as an effect.
+    let rotations = placements.map(\.rotation)
+    #expect(Set(rotations.map { ($0 * 100).rounded() }).count == rotations.count)
+    #expect(rotations.allSatisfy { abs($0) <= 2 })
+    #expect(rotations.contains { $0 < -0.4 })
+    #expect(rotations.contains { $0 > 0.4 })
+
+    // Sizes vary: a short scribble is not the same piece of paper as a note
+    // with a paragraph on it.
+    let heights = Set(placements.map { ($0.size.height).rounded() })
+    let widths = Set(placements.map { ($0.size.width).rounded() })
+    #expect(heights.count >= 4, "only \(heights.count) distinct heights")
+    #expect(widths.count >= 4, "only \(widths.count) distinct widths")
+
+    // And neither a row nor a column shares an edge, which is the giveaway a
+    // grid leaves however much the individual notes wobble.
+    let topRow = placements.prefix(3).map { ($0.y * canvas.height).rounded() }
+    #expect(Set(topRow).count == 3, "the top row is aligned: \(topRow)")
+    let rowSpread = (topRow.max() ?? 0) - (topRow.min() ?? 0)
+    #expect(rowSpread > 20, "the top row varies by only \(rowSpread)pt")
+
+    for column in 0..<3 {
+        let above = placements[column].x * canvas.width
+        let below = placements[column + 3].x * canvas.width
+        #expect(abs(above - below) > 15, "column \(column) is stacked: \(above), \(below)")
+    }
+}
+
+/// The same note has to look the same tomorrow. Deriving the imperfection from
+/// the note's identity is what separates "placed" from "shuffled every render".
+@Test func aNoteKeepsItsOwnCharacterBetweenLaunches() {
+    let first = HomeNoteHand(id: "notes/Project Atlas.md")
+    let again = HomeNoteHand(id: "notes/Project Atlas.md")
+    let other = HomeNoteHand(id: "notes/Grocery List.md")
+
+    #expect(first == again)
+    #expect(first != other)
+    #expect(first.offset != other.offset)
+    // Eight points is where an offset stops reading as a mistake.
+    let distance = (first.offset.width * first.offset.width
+        + first.offset.height * first.offset.height).squareRoot()
+    #expect(distance >= 7.9 && distance <= 20.1, "offset is \(distance)pt")
+}
+
+/// Tape a person tore and pressed down is never the same twice, and never
+/// centred. Identical strips were the strongest signal nobody put these here.
+@Test func noTwoNotesShareTheSameTape() {
+    let hands = HomeNoteCardModel
+        .cards(from: Fixtures.state(for: .typical))
+        .prefix(6)
+        .map { HomeNoteHand(id: $0.id) }
+
+    #expect(Set(hands.map { ($0.tapeWidth).rounded() }).count >= 5)
+    #expect(Set(hands.map { ($0.tapeOpacity * 100).rounded() }).count >= 5)
+    #expect(Set(hands.map { ($0.tapeRotation * 10).rounded() }).count >= 5)
+    #expect(hands.allSatisfy { abs($0.tapeRotation) <= 7 })
+    // Off-centre, and over the edge rather than floating above it.
+    #expect(hands.contains { $0.tapeOffset.width < -3 })
+    #expect(hands.contains { $0.tapeOffset.width > 3 })
+    #expect(hands.allSatisfy { $0.tapeOffset.height < 0 })
+}
+
+/// Hierarchy survives the lattice: the featured note leads on depth, and the
+/// quiet ones sit behind it rather than growing to compete.
+@Test func theFeaturedNoteLeadsOnDepthRatherThanOnSize() throws {
     let cards = HomeNoteCardModel.cards(from: Fixtures.state(for: .typical))
     let placements = HomeNoteWallLayout.placements(for: cards)
     let featuredCard = try #require(cards.first { $0.role == .featured })
-    let upperSupports = Array(cards.filter { $0.role == .supporting }.prefix(2))
     let featured = try #require(placements.first { $0.id == featuredCard.id })
-    let supportPlacements = upperSupports.compactMap { card in
-        placements.first { $0.id == card.id }
-    }
+    let backgroundCard = try #require(cards.first { $0.role == .background })
+    let background = try #require(placements.first { $0.id == backgroundCard.id })
 
-    #expect(supportPlacements.count == 2)
-    #expect(supportPlacements.allSatisfy { featured.y < $0.y })
+    #expect(featured.depth > background.depth)
+    #expect(featured.scale >= background.scale)
+    // A wall of notes, not a fan of playing cards.
+    #expect(placements.allSatisfy { abs($0.rotation) <= 3 })
 }
 
-@Test func readingListLeavesLaunchChecklistTitleClear() throws {
-    let cards = HomeNoteCardModel.cards(from: Fixtures.state(for: .typical))
-    let placements = HomeNoteWallLayout.placements(for: cards)
-    let reading = try #require(cards.first { $0.title == "Reading list" })
-    let launch = try #require(cards.first { $0.title == "Launch checklist" })
-    let readingPlacement = try #require(placements.first { $0.id == reading.id })
-    let launchPlacement = try #require(placements.first { $0.id == launch.id })
 
-    #expect(launchPlacement.y - readingPlacement.y >= 0.30)
-    #expect(launchPlacement.x >= readingPlacement.x)
-}
 
 @Test func closeControlIsSuppressedOnHomeButAvailableOnPages() {
     #expect(
@@ -270,6 +413,7 @@ import Testing
         y: 0.30,
         rotation: -2,
         scale: 1,
+        size: HomeNoteWallLayout.cardSize,
         depth: 2
     )
 
@@ -291,6 +435,7 @@ import Testing
         y: 0.25,
         rotation: -2,
         scale: 1,
+        size: HomeNoteWallLayout.cardSize,
         depth: 2
     )
 
@@ -353,3 +498,4 @@ private func homeDeckCard(_ index: Int) -> HomeNoteCardModel {
         role: .background
     )
 }
+

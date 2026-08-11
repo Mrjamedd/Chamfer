@@ -122,7 +122,8 @@ public enum BottomBarListLayout {
     /// intrinsic list height with another in a single layout pass.
     public static func expandedContentHeight(
         entryCount: Int,
-        showsSearch: Bool
+        showsSearch: Bool,
+        hasFootAction: Bool = false
     ) -> CGFloat {
         let viewport = entryViewportHeight(
             entryCount: entryCount,
@@ -130,14 +131,17 @@ public enum BottomBarListLayout {
         )
         var content = viewport
 
-        if showsSearch {
+        if showsSearch || hasFootAction {
             if entryCount > 0 {
                 content += rowSpacing
                     + searchSeparatorHeight
                     + searchSeparatorVerticalPadding
                     + rowSpacing
             }
-            content += rowHeight
+            // Search and the foot action are peers, stacked under the same one
+            // separator rather than each earning their own.
+            if showsSearch { content += rowHeight }
+            if hasFootAction { content += rowHeight + (showsSearch ? rowSpacing : 0) }
         }
 
         guard content > 0 else { return 0 }
@@ -379,65 +383,115 @@ public struct BottomBar: View {
         }
     }
 
+    /// One actionable row at the foot of an item's list, beside search.
+    ///
+    /// Carries an identifier rather than a closure so `Item` stays `Hashable`
+    /// and `Sendable`; the bar reports which one was chosen and its owner
+    /// decides what that means.
+    public struct FootAction: Identifiable, Hashable, Sendable {
+        public let id: String
+        public let title: String
+        public let symbol: String
+
+        public init(id: String, title: String, symbol: String) {
+            self.id = id
+            self.title = title
+            self.symbol = symbol
+        }
+    }
+
     public struct Item: Identifiable, Hashable, Sendable {
         public let id: String
         public let symbol: String
         public let label: String
         /// Shown when this item is hovered. Empty means the bar stays closed,
-        /// unless it offers search.
+        /// unless it offers search or a foot action.
         public let entries: [Entry]
         /// Adds a search action to the foot of this item's list.
         public let showsSearch: Bool
+        /// Somewhere to go that does not deserve a destination of its own.
+        /// This is how the Vaults page is reached without the bar growing a
+        /// fourth item.
+        public let footAction: FootAction?
+        /// How many things are waiting on this destination, when that is a
+        /// number worth carrying on the bar itself.
+        ///
+        /// Zero and nil are deliberately different: nil is "this destination
+        /// does not count things", zero is "it counts, and there are none".
+        /// Both draw nothing, but only the first would be wrong to change.
+        public let count: Int?
+        /// Something behind this destination is waiting on the user. Drawn as
+        /// an amber dot that survives the bar folding away, because a warning
+        /// only visible for the first three seconds after a mouse move is not
+        /// a warning.
+        public let needsAttention: Bool
 
         public init(
             id: String,
             symbol: String,
             label: String,
             entries: [Entry] = [],
-            showsSearch: Bool = false
+            showsSearch: Bool = false,
+            footAction: FootAction? = nil,
+            count: Int? = nil,
+            needsAttention: Bool = false
         ) {
             self.id = id
             self.symbol = symbol
             self.label = label
             self.entries = entries
             self.showsSearch = showsSearch
+            self.footAction = footAction
+            self.count = count
+            self.needsAttention = needsAttention
+        }
+
+        /// Drawn only when there is something to say.
+        var visibleCount: Int? {
+            guard let count, count > 0 else { return nil }
+            return count
         }
     }
 
     @Binding private var selection: String
     @Binding private var isSearching: Bool
-    @State private var hovered: String?
-    @State private var displayedItemID: String?
-    @State private var listContentVisible = true
-    @State private var listContentOffsetX: CGFloat = 0
-    @State private var listTransitionDirection = BottomBarContentMotion.Direction.stationary
-    @State private var listSwitchTask: Task<Void, Never>?
-    @State private var expandedContentHeight: CGFloat = 0
-    @State private var slabScale = BottomBarBounceProfile.restingScale
-    @State private var bounceTask: Task<Void, Never>?
-    @State private var isSplit = false
-    @State private var closeHovered = false
-    @State private var pressedItem: String?
-    @State private var labelsShown = true
-    @State private var idleTask: Task<Void, Never>?
-    @State private var itemFrames: [String: CGRect] = [:]
-    @State private var pointerInRow = false
-    @State private var pointerInList = false
-    @State private var closeTask: Task<Void, Never>?
-    @State private var query = ""
-    @State private var searchTransitionTask: Task<Void, Never>?
-    @State private var searchResetTask: Task<Void, Never>?
+    @LegacyState private var hovered: String?
+    @LegacyState private var displayedItemID: String?
+    @LegacyState private var listContentVisible = true
+    @LegacyState private var listContentOffsetX: CGFloat = 0
+    @LegacyState private var listTransitionDirection = BottomBarContentMotion.Direction.stationary
+    @LegacyState private var listSwitchTask: Task<Void, Never>?
+    @LegacyState private var expandedContentHeight: CGFloat = 0
+    @LegacyState private var slabScale = BottomBarBounceProfile.restingScale
+    @LegacyState private var bounceTask: Task<Void, Never>?
+    @LegacyState private var isSplit = false
+    @LegacyState private var closeHovered = false
+    @LegacyState private var pressedItem: String?
+    @LegacyState private var labelsShown = true
+    @LegacyState private var idleTask: Task<Void, Never>?
+    @LegacyState private var itemFrames: [String: CGRect] = [:]
+    @LegacyState private var pointerInRow = false
+    @LegacyState private var pointerInList = false
+    @LegacyState private var closeTask: Task<Void, Never>?
+    @LegacyState private var query = ""
+    @LegacyState private var searchTransitionTask: Task<Void, Never>?
+    @LegacyState private var searchResetTask: Task<Void, Never>?
     /// The destinations' natural width, measured so the slab can animate
     /// between it and the field's width instead of jumping between an
     /// intrinsic size and a fixed one. Nil until the first measurement, which
     /// is the one case where the slab should simply take its natural size
     /// rather than glide to it.
-    @State private var collapsedWidth: CGFloat?
+    @LegacyState private var collapsedWidth: CGFloat?
     @FocusState private var searchFocused: Bool
 
     private let items: [Item]
     private let searchableNotes: [NoteDocument]
     private let onOpenSearchResult: (NoteDocument) -> Void
+    private let onSelectFootAction: (String) -> Void
+    /// A row in a destination's hover list was chosen: which destination, and
+    /// which of its entries. Identified by the two ids rather than by the value
+    /// so the bar stays ignorant of what a note or a proposal actually is.
+    private let onSelectEntry: (String, String) -> Void
     private let idle: BarIdleBehaviour
     private let showsSelection: Bool
 
@@ -470,12 +524,16 @@ public struct BottomBar: View {
         isSearching: Binding<Bool>,
         searchableNotes: [NoteDocument] = [],
         onOpenSearchResult: @escaping (NoteDocument) -> Void = { _ in },
+        onSelectFootAction: @escaping (String) -> Void = { _ in },
+        onSelectEntry: @escaping (String, String) -> Void = { _, _ in },
         idle: BarIdleBehaviour = .standard,
         showsSelection: Bool = true
     ) {
         self.items = items
         self.searchableNotes = searchableNotes
         self.onOpenSearchResult = onOpenSearchResult
+        self.onSelectFootAction = onSelectFootAction
+        self.onSelectEntry = onSelectEntry
         self.idle = idle
         self.showsSelection = showsSelection
         _selection = selection
@@ -597,19 +655,19 @@ public struct BottomBar: View {
     static let slideCurve = Chamfer.Motion.interactive
 
     private var sliderAnimation: Animation {
-        reduceMotion ? Chamfer.Motion.quick : Self.slideCurve
+        Chamfer.Motion.reduce(Self.slideCurve, when: reduceMotion)
     }
 
     private var sectionOpenAnimation: Animation {
-        reduceMotion ? Chamfer.Motion.quick : Self.openCurve
+        Chamfer.Motion.reduce(Self.openCurve, when: reduceMotion)
     }
 
     private var sectionCloseAnimation: Animation {
-        reduceMotion ? Chamfer.Motion.quick : Self.closeCurve
+        Chamfer.Motion.reduce(Self.closeCurve, when: reduceMotion)
     }
 
     private var sectionResizeAnimation: Animation {
-        reduceMotion ? Chamfer.Motion.quick : Self.resizeCurve
+        Chamfer.Motion.reduce(Self.resizeCurve, when: reduceMotion)
     }
 
     private var destinations: some View {
@@ -723,7 +781,7 @@ public struct BottomBar: View {
             withAnimation(sectionOpenAnimation) {
                 expandedContentHeight = targetHeight
             }
-            withAnimation(.easeOut(duration: 0.08)) {
+            withAnimation(.spring(duration: 0.08, bounce: 0)) {
                 listContentVisible = true
             }
             runBounce(.opening)
@@ -747,8 +805,14 @@ public struct BottomBar: View {
             withAnimation(sectionResizeAnimation) {
                 expandedContentHeight = expandedHeight(for: targetID)
             }
+            // A spring rather than an ease because this is the fade that gets
+            // interrupted most: crossing several destinations quickly retargets
+            // it mid-flight, and an ease restarts from nothing each time.
             withAnimation(
-                .easeOut(duration: BottomBarMotionTiming.contentEntranceDuration)
+                .spring(
+                    duration: BottomBarMotionTiming.contentEntranceDuration,
+                    bounce: 0
+                )
             ) {
                 displayedItemID = targetID
                 listContentVisible = true
@@ -756,7 +820,7 @@ public struct BottomBar: View {
             }
 
         case .close:
-            withAnimation(.easeOut(duration: 0.065)) {
+            withAnimation(.spring(duration: 0.065, bounce: 0)) {
                 listContentVisible = false
                 listContentOffsetX = 0
             }
@@ -787,7 +851,7 @@ public struct BottomBar: View {
             withAnimation(wasCollapsed ? sectionOpenAnimation : sectionResizeAnimation) {
                 expandedContentHeight = expandedHeight(for: targetID)
             }
-            withAnimation(.easeOut(duration: 0.07)) {
+            withAnimation(.spring(duration: 0.07, bounce: 0)) {
                 listContentVisible = true
                 listContentOffsetX = 0
             }
@@ -802,7 +866,8 @@ public struct BottomBar: View {
 
         return BottomBarListLayout.expandedContentHeight(
             entryCount: item.entries.count,
-            showsSearch: item.showsSearch
+            showsSearch: item.showsSearch,
+            hasFootAction: item.footAction != nil
         )
     }
 
@@ -873,7 +938,7 @@ public struct BottomBar: View {
     private var expandedItem: Item? {
         guard let displayedItemID,
               let item = items.first(where: { $0.id == displayedItemID }),
-              !item.entries.isEmpty || item.showsSearch
+              !item.entries.isEmpty || item.showsSearch || item.footAction != nil
         else { return nil }
         return item
     }
@@ -1129,16 +1194,39 @@ public struct BottomBar: View {
                 EntryViewport(
                     entries: item.entries,
                     showsSearch: item.showsSearch
-                )
+                ) { entry in
+                    Haptics.commit()
+                    // Closed for the same reason the foot action closes it: a
+                    // list left hanging over the thing you just opened reads as
+                    // a menu that failed to dismiss.
+                    pointerInRow = false
+                    pointerInList = false
+                    setSectionTarget(nil)
+                    onSelectEntry(item.id, entry.id)
+                }
             }
-            if item.showsSearch {
+            if item.showsSearch || item.footAction != nil {
                 if !item.entries.isEmpty {
                     Rectangle()
                         .fill(Chamfer.Palette.barStroke.opacity(0.6))
                         .frame(height: 1)
                         .padding(.vertical, Chamfer.Space.tight)
                 }
-                SearchRow(action: beginSearch)
+                if item.showsSearch {
+                    SearchRow(action: beginSearch)
+                }
+                if let footAction = item.footAction {
+                    FootActionRow(action: footAction) {
+                        Haptics.commit()
+                        // The list has done its job the moment it is used, and
+                        // leaving it hanging open over the page you just
+                        // navigated to reads as a menu that failed to close.
+                        pointerInRow = false
+                        pointerInList = false
+                        setSectionTarget(nil)
+                        onSelectFootAction(footAction.id)
+                    }
+                }
             }
         }
         .frame(width: Self.listWidth, alignment: .leading)
@@ -1154,15 +1242,16 @@ public struct BottomBar: View {
             let contentOffset: CGFloat
         }
 
-        @State private var isHovered = false
-        @State private var isScrolling = false
-        @State private var indicatorMetrics = BottomBarScrollIndicator.Metrics(
+        @LegacyState private var isHovered = false
+        @LegacyState private var isScrolling = false
+        @LegacyState private var indicatorMetrics = BottomBarScrollIndicator.Metrics(
             thumbHeight: 0,
             thumbOffset: 0
         )
 
         let entries: [Entry]
         let showsSearch: Bool
+        let onSelect: (Entry) -> Void
 
         private var needsScrolling: Bool {
             BottomBarListLayout.needsScrolling(
@@ -1193,7 +1282,7 @@ public struct BottomBar: View {
                     spacing: BottomBarListLayout.rowSpacing
                 ) {
                     ForEach(entries) { entry in
-                        ListRow(entry: entry)
+                        ListRow(entry: entry) { onSelect(entry) }
                             // The scroll thumb updates while the viewport is
                             // moving. Rows whose data has not changed should
                             // not be rebuilt for every sub-point of travel.
@@ -1223,7 +1312,7 @@ public struct BottomBar: View {
             .scrollBounceBehavior(.basedOnSize)
             .onHover { isHovered = $0 }
             .onScrollPhaseChange { _, phase in
-                withAnimation(.easeOut(duration: 0.12)) {
+                withAnimation(.spring(duration: 0.12, bounce: 0)) {
                     isScrolling = phase.isScrolling
                 }
             }
@@ -1264,7 +1353,7 @@ public struct BottomBar: View {
                         .padding(.trailing, 3)
                         .opacity(showsIndicator ? 1 : 0)
                         .animation(
-                            .easeOut(duration: 0.12),
+                            .spring(duration: 0.12, bounce: 0),
                             value: showsIndicator
                         )
                         .allowsHitTesting(false)
@@ -1273,43 +1362,59 @@ public struct BottomBar: View {
         }
     }
 
+    /// One thing in a destination's hover list.
+    ///
+    /// A `Button`, which it was not. The rows lit up under the pointer, took a
+    /// hover ring, and did nothing when clicked — so the list that Notes,
+    /// Review and Models all hang their contents on was, in practice, a
+    /// picture of a list. Everything about the appearance is unchanged; the
+    /// row simply does something now.
     private struct ListRow: View, Equatable {
-        @State private var isHovered = false
+        @LegacyState private var isHovered = false
 
         let entry: Entry
+        let action: () -> Void
 
         nonisolated static func == (lhs: ListRow, rhs: ListRow) -> Bool {
             lhs.entry == rhs.entry
         }
 
         var body: some View {
-            HStack(alignment: .firstTextBaseline, spacing: Chamfer.Space.regular) {
-                Text(entry.title)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Chamfer.Palette.textOnPaper)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: Chamfer.Space.snug)
-                Text(entry.detail)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Chamfer.Palette.textOnPaperSoft)
-                    .lineLimit(1)
+            Button(action: action) {
+                HStack(alignment: .firstTextBaseline, spacing: Chamfer.Space.regular) {
+                    Text(entry.title)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Chamfer.Palette.textOnPaper)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: Chamfer.Space.snug)
+                    Text(entry.detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Chamfer.Palette.textOnPaperSoft)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, Chamfer.Space.snug)
+                .padding(.vertical, Chamfer.Space.tight - 1)
+                .frame(height: 20)
+                .background(isHovered ? Chamfer.Palette.hoverTint : .clear)
+                .clipShape(
+                    RoundedRectangle(cornerRadius: Chamfer.Radius.small - 2, style: .continuous)
+                )
+                .chamferHoverRing(isHovered, radius: Chamfer.Radius.small - 2)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, Chamfer.Space.snug)
-            .padding(.vertical, Chamfer.Space.tight - 1)
-            .frame(height: 20)
-            .background(isHovered ? Chamfer.Palette.hoverTint : .clear)
-            .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small - 2, style: .continuous))
-            .chamferHoverRing(isHovered, radius: Chamfer.Radius.small - 2)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
             .onHover { isHovered = $0 }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(entry.title), \(entry.detail)")
+            .accessibilityAddTraits(.isButton)
         }
     }
 
     /// The action at the foot of a list. Same metrics as an entry so the list
     /// stays one rhythm, but led by an icon to mark it as a verb.
     private struct SearchRow: View {
-        @State private var isHovered = false
+        @LegacyState private var isHovered = false
 
         let action: () -> Void
 
@@ -1337,8 +1442,40 @@ public struct BottomBar: View {
         }
     }
 
+    /// The same row as search, with the item's own icon and words. Identical
+    /// on purpose: both are ways out of the list rather than things in it.
+    private struct FootActionRow: View {
+        @LegacyState private var isHovered = false
+
+        let action: FootAction
+        let perform: () -> Void
+
+        var body: some View {
+            Button(action: perform) {
+                HStack(spacing: Chamfer.Space.snug) {
+                    Image(systemName: action.symbol)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Chamfer.Palette.textOnPaperSoft)
+                        .frame(width: 13)
+                    Text(action.title)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Chamfer.Palette.textOnPaper)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, Chamfer.Space.snug)
+                .frame(height: 20)
+                .background(isHovered ? Chamfer.Palette.hoverTint : .clear)
+                .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small - 2, style: .continuous))
+                .chamferHoverRing(isHovered, radius: Chamfer.Radius.small - 2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+        }
+    }
+
     private struct SearchResultRow: View {
-        @State private var isHovered = false
+        @LegacyState private var isHovered = false
 
         let match: BottomBarSearchMatch
         let action: () -> Void
@@ -1377,14 +1514,14 @@ public struct BottomBar: View {
                 BarButton(
                     item: item,
                     isPressed: item.id == pressedItem,
-                    isActive: item.id == selection,
                     isSliderTarget: showsSelection && item.id == (pressedItem ?? selection),
                     showsLabel: labelsShown,
-                    extraPadding: idle.activeExtraPadding,
                     idleIconScale: idle.idleIconScale,
                     onHover: { inside in
                         guard inside, !isSearching, pressedItem == nil else { return }
-                        let opens = !item.entries.isEmpty || item.showsSearch
+                        let opens = !item.entries.isEmpty
+                            || item.showsSearch
+                            || item.footAction != nil
                         let next = opens ? item.id : nil
                         guard next != hovered else { return }
                         if next != nil, displayedItemID == nil { Haptics.pop() }
@@ -1396,7 +1533,12 @@ public struct BottomBar: View {
                 }
             }
         }
-        .padding(.horizontal, Chamfer.Space.tight + 1)
+        // The selector is drawn `activeExtraPadding` wider than the destination
+        // it sits under, so the row has to carry that much margin or the pill
+        // on the first and last destination lands flush against the bar's edge.
+        // Holding it here rather than in each button is also what keeps the row
+        // the same total width it was when the buttons paid for it themselves.
+        .padding(.horizontal, Chamfer.Space.tight + 1 + idle.activeExtraPadding)
         .frame(height: barHeight)
         .coordinateSpace(.named(Self.rowSpace))
         .background(alignment: .topLeading) { selectionSlider }
@@ -1410,11 +1552,16 @@ public struct BottomBar: View {
     private var selectionSlider: some View {
         let target = pressedItem ?? selection
         if showsSelection, let frame = itemFrames[target] {
+            // The breadth the selected destination used to add to its own
+            // padding is drawn here instead. The pill is the same size it
+            // always was; it is simply no longer paid for out of the row's
+            // layout, so the labels underneath it never move.
+            let breadth = idle.activeExtraPadding
             RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
                 .fill(Chamfer.Palette.selectionTint)
                 .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
-                .frame(width: frame.width, height: frame.height)
-                .offset(x: frame.minX, y: frame.minY)
+                .frame(width: frame.width + breadth * 2, height: frame.height)
+                .offset(x: frame.minX - breadth, y: frame.minY)
                 .animation(sliderAnimation, value: frame)
                 .allowsHitTesting(false)
         }
@@ -1447,28 +1594,29 @@ public struct BottomBar: View {
     }
 
     private struct BarButton: View {
-        @State private var isHovered = false
+        @LegacyState private var isHovered = false
         /// The label's natural width, measured from a hidden copy that is
         /// never squeezed. Animating a real width is what makes the collapse
         /// smooth — inserting and removing the label instead makes the text
         /// pop while the pill catches up behind it.
-        @State private var labelWidth: CGFloat = 0
+        @LegacyState private var labelWidth: CGFloat = 0
 
         let item: Item
         let isPressed: Bool
-        /// The destination currently being shown, which is given a little more
-        /// room than its neighbours.
-        let isActive: Bool
         /// The destination currently underneath the moving black selector.
         let isSliderTarget: Bool
         let showsLabel: Bool
-        let extraPadding: CGFloat
         /// How far the icon draws down once the label has gone.
         let idleIconScale: CGFloat
         let onHover: (Bool) -> Void
 
         private static let iconFont = Font.system(size: 11, weight: .regular)
         private static let labelFont = Font.system(size: 12.5, weight: .medium)
+        /// The same vocabulary as the gutter's versions control: the glyph, and
+        /// a monospaced figure beside it at caption weight. Reusing that pairing
+        /// rather than inventing a badge keeps the bar free of the only pill it
+        /// would have contained.
+        private static let countFont = Font.system(size: 11, weight: .semibold)
         private static let gap = Chamfer.Space.tight + 2
         /// Idle pulls the pill in around the smaller glyph. Without it the
         /// symbol shrinks inside a slot the width of the old one, which reads
@@ -1495,6 +1643,24 @@ public struct BottomBar: View {
                     // size and taken down from there, because a glyph scaled
                     // down stays clean where one scaled up goes soft.
                     .scaleEffect(showsLabel ? 1 : idleIconScale)
+                    .overlay(alignment: .topTrailing) {
+                        // Fixed to the glyph's corner and punched out of the
+                        // bar's own colour, so it reads as a badge belonging to
+                        // this destination rather than a dot that happens to be
+                        // nearby. Riding the glyph is also what keeps it there
+                        // when the labels fold away.
+                        if item.needsAttention {
+                            AttentionDot(
+                                .badge,
+                                punchedOutOf: Chamfer.Palette.bar,
+                                label: "A vault needs setting up"
+                            )
+                            .offset(x: 3.5, y: -2.5)
+                            .transition(
+                                .scale(scale: 0.4).combined(with: .opacity)
+                            )
+                        }
+                    }
                 Text(item.label)
                     .font(Self.labelFont)
                     .fixedSize()
@@ -1504,11 +1670,36 @@ public struct BottomBar: View {
                     // in one continuous move.
                     .frame(width: showsLabel ? labelWidth : 0, alignment: .leading)
                     .clipped()
+
+                // The count survives the idle collapse alongside the glyph,
+                // which is the whole point: the bar spends most of its life
+                // folded, and a count that only showed while the labels were
+                // out would be a count nobody ever saw.
+                if let count = item.visibleCount {
+                    Text("\(count)")
+                        .font(Self.countFont)
+                        .monospacedDigit()
+                        .scaleEffect(showsLabel ? 1 : idleIconScale)
+                        .padding(.leading, showsLabel ? 0 : Self.gap)
+                        .transition(
+                            .opacity.combined(with: .scale(scale: 0.7, anchor: .leading))
+                        )
+                }
             }
+            .animation(Chamfer.Motion.interactive, value: item.visibleCount)
+            .animation(Chamfer.Motion.interactive, value: item.needsAttention)
             .foregroundStyle(
                 isSliderTarget ? Color.white : Chamfer.Palette.textOnPaper
             )
-            .padding(.horizontal, (showsLabel ? Self.pad : Self.idlePad) + (isActive ? extraPadding : 0))
+            // Deliberately independent of which destination is selected. While
+            // the selected one paid for its own extra breadth here, changing
+            // destination added width to one button and took it from another
+            // inside the selection animation — so the whole row reflowed and
+            // every label was dragged through an animated re-layout, its glyphs
+            // re-rasterised at fractional offsets on each frame. That was the
+            // text sliding and mangling on every tab change. The breadth is now
+            // drawn by the selector, which is the only thing that should move.
+            .padding(.horizontal, showsLabel ? Self.pad : Self.idlePad)
             .padding(.vertical, Chamfer.Space.tight)
             // The selected capsule already carries the tint and outline.
             .background(
@@ -1525,6 +1716,19 @@ public struct BottomBar: View {
                 onHover(inside)
             }
             .animation(Chamfer.Motion.quick, value: isHovered)
+            // The label is the only thing VoiceOver had, and it disappears with
+            // the idle collapse — so the destination was announced as nothing
+            // at all most of the time. Spelled out here instead, count and all.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityAddTraits(isSliderTarget ? [.isButton, .isSelected] : .isButton)
+        }
+
+        private var accessibilityLabel: String {
+            var parts = [item.label]
+            if let count = item.visibleCount { parts.append("\(count) waiting") }
+            if item.needsAttention { parts.append("a vault needs setting up") }
+            return parts.joined(separator: ", ")
         }
 
         /// A copy of the label at its natural size, drawn nowhere. Backgrounds
@@ -1565,7 +1769,7 @@ private extension View {
 
 /// The dismiss control that floats above the page, revealed on approach.
 public struct FloatingCloseButton: View {
-    @State private var isHovered = false
+    @LegacyState private var isHovered = false
 
     private let action: () -> Void
     private let onHover: (Bool) -> Void
@@ -1595,6 +1799,13 @@ public struct FloatingCloseButton: View {
                 }
                 .clipShape(Circle())
                 .overlay(Circle().strokeBorder(Chamfer.Palette.barStroke, lineWidth: 1))
+                // The circle reads at 32pt but answers to 44 — the pointer
+                // should not have to be accurate to dismiss something. Padding
+                // out and back in leaves the layout footprint at exactly 32,
+                // so nothing on screen moves; only the reach changes.
+                .padding(6)
+                .contentShape(Rectangle())
+                .padding(-6)
         }
         .buttonStyle(.plain)
         .chamferHoverRingCircle(isHovered)

@@ -2,8 +2,8 @@ import ChamferCore
 import Foundation
 import SwiftUI
 
-/// Copy for the home page. The selection advances every twelve minutes and
-/// changes its vocabulary with the time of day.
+/// Copy for the home page. The vocabulary follows the time of day; which line
+/// is shown is decided by `HomeGreetingSchedule`.
 public enum HomeGreetingRotation {
     private static let general = [
         "Hello, {name}.",
@@ -62,17 +62,122 @@ public enum HomeGreetingRotation {
         }
     }
 
+    /// The user's first name, as macOS knows it.
+    ///
+    /// Hardcoding a name is fine in a harness and embarrassing in a shipped
+    /// app. Falls back to a greeting that works without one rather than to
+    /// somebody else's name.
+    public static func currentUserName() -> String {
+        let full = NSFullUserName().trimmingCharacters(in: .whitespaces)
+        guard let first = full.split(separator: " ").first, first.count > 1 else {
+            return NSUserName()
+        }
+        return String(first)
+    }
+
+    /// The line for a given rotation window.
+    ///
+    /// The day is folded into the offset so two sessions started at the same
+    /// hour on different days do not open on the same greeting.
     public static func text(
+        window: Int,
         at date: Date,
         name: String,
         calendar: Calendar = .current
     ) -> String {
         let hour = calendar.component(.hour, from: date)
-        let minute = calendar.component(.minute, from: date)
         let day = calendar.ordinality(of: .day, in: .year, for: date) ?? 0
         let greetings = availableGreetings(hour: hour, name: name)
-        let rotationWindow = day * 120 + hour * 5 + minute / 12
-        return greetings[rotationWindow % greetings.count]
+        let offset = day &* 7 &+ hour &+ window
+        return greetings[((offset % greetings.count) + greetings.count) % greetings.count]
+    }
+}
+
+/// When the greeting is allowed to change.
+///
+/// Two rules, and the second is the reason this is a type rather than a
+/// function of the clock:
+///
+/// 1. It advances once every 45 minutes **the app has been open**, not on a
+///    wall-clock boundary. A session is the unit, so the first line lasts the
+///    same 45 minutes whether the app opened at 9:00 or at 9:44.
+/// 2. It never changes while the home screen is the thing being looked at.
+///    The window can come due while you are reading it; the new line waits
+///    until you have gone somewhere else and come back. A greeting that
+///    rewrote itself under the cursor would be the one piece of copy on the
+///    page that behaves like an advertisement.
+///
+/// The consequence of (2) is deliberate: leave the home screen open all day and
+/// the greeting stays put all day. It is a welcome, and it has nobody to
+/// welcome while you are already here.
+public struct HomeGreetingSchedule: Equatable, Sendable {
+    /// Long enough that returning after a coffee is the shortest interval that
+    /// can produce a change.
+    public static let interval: TimeInterval = 45 * 60
+
+    public let openedAt: Date
+    /// The window whose line is currently on screen. Only `resolve` moves it.
+    public private(set) var shownWindow: Int
+
+    public init(openedAt: Date, shownWindow: Int = 0) {
+        self.openedAt = openedAt
+        self.shownWindow = shownWindow
+    }
+
+    /// How many 45-minute intervals of app-open time have elapsed.
+    public func window(at date: Date) -> Int {
+        let elapsed = date.timeIntervalSince(openedAt)
+        guard elapsed > 0 else { return 0 }
+        return Int(elapsed / Self.interval)
+    }
+
+    public func isDue(at date: Date) -> Bool {
+        window(at: date) != shownWindow
+    }
+
+    /// Catches the shown line up to the current window and returns it.
+    ///
+    /// Called as the home screen appears, never while it is on screen, which is
+    /// what makes rule 2 structural rather than a promise.
+    public mutating func resolve(
+        at date: Date,
+        name: String,
+        calendar: Calendar = .current
+    ) -> String {
+        shownWindow = window(at: date)
+        return HomeGreetingRotation.text(
+            window: shownWindow,
+            at: date,
+            name: name,
+            calendar: calendar
+        )
+    }
+}
+
+/// The one schedule for the running app.
+///
+/// Process-scoped because "45 minutes that the app is open" is a fact about the
+/// process, not about a view: `HomeScreenView` is created and destroyed every
+/// time you leave the home screen and come back, and a schedule living in its
+/// state would restart on every visit and never reach 45 minutes.
+@MainActor
+public final class HomeGreetingClock {
+    public static let shared = HomeGreetingClock()
+
+    private var schedule: HomeGreetingSchedule
+
+    public init(openedAt: Date = Date()) {
+        schedule = HomeGreetingSchedule(openedAt: openedAt)
+    }
+
+    /// The line to show now. Safe to call only when the home screen is about to
+    /// appear or has just appeared.
+    public func greeting(
+        at date: Date = Date(),
+        name: String,
+        calendar: Calendar = .current
+    ) -> String {
+        schedule.resolve(at: date, name: name, calendar: calendar)
     }
 }
 
@@ -356,89 +461,225 @@ public struct HomeNotePlacement: Identifiable, Equatable {
     public let x: CGFloat
     public let y: CGFloat
     public let rotation: Double
+    /// A multiplier the motion applies on top of `size`. Placement variation
+    /// lives in `size`, so hover and opening arithmetic stays about motion.
     public let scale: CGFloat
+    /// This note's own dimensions, in points. Notes are not all one rectangle:
+    /// a two-line scribble is smaller than a paragraph, the way it would be if
+    /// somebody had torn one off a pad.
+    public let size: CGSize
     public let depth: Double
 }
 
+/// The small deviations that separate "placed by hand" from "laid out".
+///
+/// Derived from the note's own identity rather than its slot, and derived
+/// rather than random: a wall that rearranges itself every time the view is
+/// rebuilt is worse than a tidy one. The same note gets the same character
+/// every launch, and no two notes share one.
+public struct HomeNoteHand: Equatable {
+    public let offset: CGSize
+    public let rotation: Double
+    public let widthScale: CGFloat
+    public let tapeWidth: CGFloat
+    public let tapeOpacity: Double
+    public let tapeRotation: Double
+    public let tapeOffset: CGSize
+
+    /// FNV-1a. Any stable hash would do; this one is short and does not vary
+    /// between processes the way `hashValue` does.
+    static func seed(_ text: String) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return hash
+    }
+
+    /// A value in `range`, taken from `slice` bits of the seed.
+    static func value(
+        _ seed: UInt64,
+        slice: Int,
+        in range: ClosedRange<Double>
+    ) -> Double {
+        let shifted = (seed >> UInt64(slice * 8)) & 0xff
+        let fraction = Double(shifted) / 255.0
+        return range.lowerBound + fraction * (range.upperBound - range.lowerBound)
+    }
+
+    public init(id: String) {
+        let seed = Self.seed(id)
+        // Eight to twenty points, in whichever direction this note leans. Below
+        // eight it reads as a rendering error rather than as placement.
+        let distance = Self.value(seed, slice: 0, in: 8...20)
+        let angle = Self.value(seed, slice: 1, in: 0...(2 * .pi))
+        offset = CGSize(
+            width: distance * cos(angle),
+            height: distance * sin(angle)
+        )
+        rotation = Self.value(seed, slice: 2, in: -2.0...2.0)
+        widthScale = CGFloat(Self.value(seed, slice: 3, in: 0.90...1.08))
+        tapeWidth = CGFloat(Self.value(seed, slice: 4, in: 30...52))
+        tapeOpacity = Self.value(seed, slice: 5, in: 0.38...0.66)
+        tapeRotation = Self.value(seed, slice: 6, in: -7.0...7.0)
+        // Tape a person tore off and pressed down lands off-centre and at
+        // varying depth over the edge. Centred, identical strips are the single
+        // clearest sign nobody put these here.
+        tapeOffset = CGSize(
+            width: Self.value(seed, slice: 7, in: -26...26),
+            height: Self.value(seed, slice: 3, in: -7...(-1))
+        )
+    }
+}
+
 public enum HomeNoteWallLayout {
-    public static func placements(for cards: [HomeNoteCardModel]) -> [HomeNotePlacement] {
-        var placements: [HomeNotePlacement] = []
-        let featured = cards.first { $0.role == .featured }
-        let supportingNotes = cards.filter { $0.role == .supporting }
-        let cleanedNotes = cards.filter { $0.role == .recentlyCleaned }
-        let backgroundNotes = cards.filter { $0.role == .background }
+    /// The card's base dimensions before this note's own variation.
+    public static let cardSize = CGSize(width: 178, height: 162)
 
-        if let featured {
-            placements.append(
-                .init(
-                    id: featured.id,
-                    x: 0.52,
-                    y: 0.27,
-                    rotation: 1.2,
-                    scale: 1.10,
-                    depth: 4
-                )
+    /// The most notes the wall shows at once.
+    public static let slotCount = 6
+
+    /// How far each row slides sideways, and each column sits up or down.
+    ///
+    /// Per-note wobble is not enough on its own: however much each note moves,
+    /// a column still shares a left edge and a row still shares a baseline, and
+    /// that is the grid you can read in a screenshot. These shifts are the
+    /// wall's doing rather than any note's, which is why they are indexed by
+    /// position and not by identity.
+    private static let rowShift: [CGFloat] = [-0.07, 0.10]
+    private static let columnShift: [CGFloat] = [0.06, -0.09, 0.03]
+
+    static func rowStagger(row: Int, cell: CGSize) -> CGFloat {
+        rowShift[row % rowShift.count] * cell.width
+    }
+
+    static func columnLift(column: Int, cell: CGSize) -> CGFloat {
+        columnShift[column % columnShift.count] * cell.height
+    }
+
+    /// Cards are seated on a three-by-two lattice and then knocked off it.
+    ///
+    /// The lattice is what makes overlap impossible; it is not what the wall
+    /// should look like. Left at their cell centres the notes read as a
+    /// contact sheet — equally spaced, equally sized, equally angled — so each
+    /// one is moved by eight to twenty points in its own direction, turned by
+    /// up to two degrees, and sized to how much it has to say. Every one of
+    /// those deviations is clamped to the room inside its own cell, so the
+    /// wall can be as irregular as it likes and still never stack.
+    ///
+    /// Controlled imperfection: the offsets come from the note's identity, so
+    /// they are the same on every launch. A wall that reshuffles itself while
+    /// you look at it is not more natural, only less trustworthy.
+    public static func placements(
+        for cards: [HomeNoteCardModel],
+        canvas: CGSize = CGSize(width: 736, height: 420)
+    ) -> [HomeNotePlacement] {
+        guard !cards.isEmpty else { return [] }
+
+        let columns = 3
+        let rows = 2
+        let cell = CGSize(
+            width: canvas.width / CGFloat(columns),
+            height: canvas.height / CGFloat(rows)
+        )
+
+        return cards.prefix(slotCount).enumerated().map { index, card in
+            let hand = HomeNoteHand(id: card.id)
+            let wanted = size(for: card, hand: hand)
+
+            // Shrink only if this note cannot fit its cell at all.
+            let fit = min(
+                1.0,
+                min(cell.width / wanted.width, cell.height / wanted.height)
+            )
+            let placed = CGSize(width: wanted.width * fit, height: wanted.height * fit)
+
+            // Whatever room is left is how far the note may wander.
+            let slack = CGSize(
+                width: max(0, cell.width - placed.width) / 2,
+                height: max(0, cell.height - placed.height) / 2
+            )
+            // The wall's shifts and the note's own wobble come out of one
+            // budget, and it is their sum that has to stay inside the cell. Two
+            // separate clamps would each pass while together walking the note
+            // into its neighbour.
+            let displacement = CGSize(
+                width: hand.offset.width + rowStagger(row: index / columns, cell: cell),
+                height: hand.offset.height + columnLift(column: index % columns, cell: cell)
+            )
+            let offset = CGSize(
+                width: min(max(displacement.width, -slack.width), slack.width),
+                height: min(max(displacement.height, -slack.height), slack.height)
+            )
+
+            let column = index % columns
+            let row = index / columns
+            // Rows are staggered and columns are stepped, and neither is the
+            // note's own doing — it is the wall's. Without this every note in
+            // a column shares a left edge and every note in a row shares a
+            // baseline, which is the grid you can still read however much the
+            // individual notes wobble. The shifts are a fraction of a cell, so
+            // they come out of the same slack budget as everything else.
+            let centreX = (CGFloat(column) + 0.5) * cell.width
+            let centreY = (CGFloat(row) + 0.5) * cell.height
+
+            return HomeNotePlacement(
+                id: card.id,
+                x: (centreX + offset.width) / max(canvas.width, 1),
+                y: (centreY + offset.height) / max(canvas.height, 1),
+                rotation: hand.rotation,
+                scale: 1,
+                size: placed,
+                depth: depth(for: card.role)
             )
         }
+    }
 
-        let supportingSlots: [(CGFloat, CGFloat, Double, CGFloat, Double)] = [
-            (0.22, 0.31, -2.0, 0.98, 3),
-            (0.84, 0.29, 1.6, 0.97, 3),
-            (0.85, 0.66, -1.3, 0.94, 2),
-            (0.24, 0.73, 1.8, 0.91, 2),
-            (0.52, 0.79, -1.0, 0.89, 1)
-        ]
-        for (card, slot) in zip(supportingNotes, supportingSlots) {
-            placements.append(
-                .init(
-                    id: card.id,
-                    x: slot.0,
-                    y: slot.1,
-                    rotation: slot.2,
-                    scale: slot.3,
-                    depth: slot.4
-                )
+    /// How big this note wants to be.
+    ///
+    /// A note with two words on it is a smaller piece of paper than one
+    /// carrying a paragraph. Forcing both into the same rectangle is most of
+    /// what made the wall look printed rather than pinned.
+    static func size(for card: HomeNoteCardModel, hand: HomeNoteHand) -> CGSize {
+        let content = card.title.count + card.preview.count
+        // Roughly a short scribble at 40 characters and a full note at 220.
+        let fullness = min(max(Double(content - 40) / 180, 0), 1)
+        let height = cardSize.height * CGFloat(0.86 + 0.26 * fullness)
+        // A featured note earns a little more room; it is the one being
+        // recommended.
+        let emphasis: CGFloat = card.role == .featured ? 1.05 : 1.0
+        return CGSize(
+            width: cardSize.width * hand.widthScale * emphasis,
+            height: height * emphasis
+        )
+    }
+
+    private static func depth(for role: HomeNoteCardModel.Role) -> Double {
+        switch role {
+        case .featured: 4
+        case .supporting: 3
+        case .recentlyCleaned: 2
+        case .background: 1
+        }
+    }
+
+    /// Whether two placements would draw over one another on `canvas`.
+    /// Used by the test that keeps this honest.
+    public static func overlaps(
+        _ first: HomeNotePlacement,
+        _ second: HomeNotePlacement,
+        canvas: CGSize
+    ) -> Bool {
+        func rect(_ placement: HomeNotePlacement) -> CGRect {
+            CGRect(
+                x: placement.x * canvas.width - placement.size.width / 2,
+                y: placement.y * canvas.height - placement.size.height / 2,
+                width: placement.size.width,
+                height: placement.size.height
             )
         }
-
-        let cleanedSlots: [(CGFloat, CGFloat, Double, CGFloat, Double)] = [
-            (0.38, 0.71, 1.2, 0.90, 1),
-            (0.54, 0.76, -1.3, 0.88, 1)
-        ]
-        for (card, slot) in zip(cleanedNotes, cleanedSlots) {
-            placements.append(
-                .init(
-                    id: card.id,
-                    x: slot.0,
-                    y: slot.1,
-                    rotation: slot.2,
-                    scale: slot.3,
-                    depth: slot.4
-                )
-            )
-        }
-
-        let backgroundSlots: [(CGFloat, CGFloat, Double, CGFloat, Double)] = [
-            (0.14, 0.57, -1.5, 0.84, 0),
-            (0.87, 0.55, 1.7, 0.83, 0),
-            (0.18, 0.78, -1.8, 0.82, 0),
-            (0.83, 0.78, 1.4, 0.81, 0),
-            (0.50, 0.82, -0.8, 0.80, 0)
-        ]
-        for (card, slot) in zip(backgroundNotes, backgroundSlots) {
-            placements.append(
-                .init(
-                    id: card.id,
-                    x: slot.0,
-                    y: slot.1,
-                    rotation: slot.2,
-                    scale: slot.3,
-                    depth: slot.4
-                )
-            )
-        }
-
-        return placements
+        return rect(first).intersects(rect(second))
     }
 
     public static func openingOffset(
@@ -516,35 +757,51 @@ private enum HomeNoteReplacementMotion: Equatable {
 
 public struct HomeScreenView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var openingID: String?
-    @State private var clockRotation = 0.0
-    @State private var clockIsHovered = false
-    @State private var hasEntered = false
-    @State private var noteDeck: HomeNoteDeck
-    @State private var replacementSlot: Int?
-    @State private var replacementMotion = HomeNoteReplacementMotion.idle
-    @State private var replacementTask: Task<Void, Never>?
+    @LegacyState private var openingID: String?
+    @LegacyState private var clockRotation = 0.0
+    @LegacyState private var clockIsHovered = false
+    @LegacyState private var hasEntered = false
+    @LegacyState private var noteDeck: HomeNoteDeck
+    @LegacyState private var replacementSlot: Int?
+    @LegacyState private var replacementMotion = HomeNoteReplacementMotion.idle
+    @LegacyState private var replacementTask: Task<Void, Never>?
+    /// The line on screen. Written on appear and never again while this view
+    /// exists, which is the whole of the "does not rotate while you are looking
+    /// at it" rule.
+    @LegacyState private var greeting: String
 
     private let state: DashboardState
     private let name: String
+    private let clock: HomeGreetingClock
     private let onOpenNote: (NoteDocument) -> Void
     private let slotPlacements: [HomeNotePlacement]
 
+    /// The card leaving the wall, and its replacement dropping into the gap.
+    /// Named so the two halves of one gesture cannot drift apart, and kept out
+    /// of the shared tokens on purpose: these answer a swipe's momentum rather
+    /// than a pointer, which is what earns the arrival its bounce.
+    private static let cardLiftCurve = Animation.spring(duration: 0.18, bounce: 0.025)
+    private static let cardArriveCurve = Animation.spring(duration: 0.24, bounce: 0.08)
+
+    private let onConnectVault: (@MainActor () -> Void)?
+
     public init(
         state: DashboardState,
-        name: String = "Anthony",
-        onOpenNote: @escaping (NoteDocument) -> Void
+        name: String = HomeGreetingRotation.currentUserName(),
+        clock: HomeGreetingClock = .shared,
+        onOpenNote: @escaping (NoteDocument) -> Void,
+        onConnectVault: (@MainActor () -> Void)? = nil
     ) {
         self.state = state
         self.name = name
+        self.clock = clock
         self.onOpenNote = onOpenNote
+        self.onConnectVault = onConnectVault
+        // Resolved here as well as in `onAppear` so the first frame is already
+        // the right line rather than an empty one that pops in.
+        _greeting = State(initialValue: clock.greeting(name: name))
         let deck = HomeNoteDeck(cards: HomeNoteCardModel.deckCards(from: state))
-        let placementsByID = Dictionary(
-            uniqueKeysWithValues: HomeNoteWallLayout.placements(for: deck.visible).map {
-                ($0.id, $0)
-            }
-        )
-        slotPlacements = deck.visible.compactMap { placementsByID[$0.id] }
+        slotPlacements = HomeNoteWallLayout.placements(for: deck.visible)
         _noteDeck = State(initialValue: deck)
     }
 
@@ -573,25 +830,42 @@ public struct HomeScreenView: View {
                 .opacity(hasEntered ? 1 : 0)
                 .offset(y: !reduceMotion && !hasEntered ? 5 : 0)
                 .animation(
-                    reduceMotion
-                        ? Chamfer.Motion.quick
-                        : .easeOut(duration: 0.20).delay(0.02),
+                    Chamfer.Motion.reduce(
+                        Chamfer.Motion.interactive.delay(0.02),
+                        when: reduceMotion
+                    ),
                     value: hasEntered
                 )
 
-                Text("Start with the interesting part.")
+                // Resolved once, as the page appears — deliberately not read
+                // from `context.date`. This view is inside a one-second
+                // `TimelineView` for the clock above it, and taking the
+                // greeting from that tick is what used to let it change while
+                // somebody was reading it.
+                Text(greeting)
                     .font(.system(size: 46, weight: .semibold, design: .serif))
                     .foregroundStyle(Chamfer.Palette.pageText)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .minimumScaleFactor(0.78)
                     .frame(maxWidth: 620)
+                    // Only ever fires on arrival, since `greeting` cannot
+                    // change while this view is on screen. Kept so a returning
+                    // visit settles rather than snapping.
+                    .animation(
+                        Chamfer.Motion.reduce(
+                            Chamfer.Motion.navigation,
+                            when: reduceMotion
+                        ),
+                        value: greeting
+                    )
                     .opacity(hasEntered ? 1 : 0)
                     .offset(y: !reduceMotion && !hasEntered ? 8 : 0)
                     .animation(
-                        reduceMotion
-                            ? Chamfer.Motion.quick
-                            : .easeOut(duration: 0.22).delay(0.04),
+                        Chamfer.Motion.reduce(
+                            Chamfer.Motion.interactive.delay(0.04),
+                            when: reduceMotion
+                        ),
                         value: hasEntered
                     )
 
@@ -607,6 +881,10 @@ public struct HomeScreenView: View {
             .padding(.bottom, 10)
         }
         .onAppear {
+            // The one moment the greeting may change: arriving. If a 45-minute
+            // window came due while the home screen was closed, the new line is
+            // simply the one that is here when you get back.
+            greeting = clock.greeting(name: name)
             hasEntered = false
             Task { @MainActor in
                 await Task.yield()
@@ -624,22 +902,14 @@ public struct HomeScreenView: View {
         let cards = noteDeck.visible
 
         if cards.isEmpty {
-            VStack(alignment: .leading, spacing: Chamfer.Space.snug) {
-                Text("Your notes will gather here.")
-                    .font(Chamfer.TypeScale.pageHeading)
-                    .foregroundStyle(Chamfer.Palette.pageText)
-                Text("A quiet place for the things you are thinking about.")
-                    .font(Chamfer.TypeScale.body)
-                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
-            }
-            .frame(maxWidth: .infinity, minHeight: 260, alignment: .center)
+            emptyWall
         } else {
             GeometryReader { geometry in
                 ZStack {
                     AmbientClusterGlow()
                         .frame(
-                            width: geometry.size.width * 0.90,
-                            height: geometry.size.height * 0.92
+                            width: geometry.size.width * 0.72,
+                            height: geometry.size.height * 0.66
                         )
                         .position(
                             x: geometry.size.width * 0.52,
@@ -647,10 +917,13 @@ public struct HomeScreenView: View {
                         )
                         .opacity(hasEntered ? 1 : 0)
                         .scaleEffect(hasEntered || reduceMotion ? 1 : 0.92)
+                        // The slowest of the three: the glow is the backdrop the
+                        // other two arrive on top of, so it settles last.
                         .animation(
-                            reduceMotion
-                                ? Chamfer.Motion.quick
-                                : .easeOut(duration: 0.26),
+                            Chamfer.Motion.reduce(
+                                Chamfer.Motion.navigation,
+                                when: reduceMotion
+                            ),
                             value: hasEntered
                         )
 
@@ -697,6 +970,61 @@ public struct HomeScreenView: View {
         }
     }
 
+    /// The wall with nothing on it.
+    ///
+    /// The previous version was a left-aligned pair of lines inside a
+    /// centre-aligned frame, so the text sat off-axis in a 260pt void with the
+    /// glow switched off — the one screen a new user sees first, and the least
+    /// finished thing in the app.
+    ///
+    /// This keeps the composition: the glow still sits behind, and a single
+    /// card holds the slot the featured note would occupy, tape and tilt
+    /// included. An empty wall should look like a wall waiting for something,
+    /// not like a page that failed to load.
+    private var emptyWall: some View {
+        GeometryReader { geometry in
+            ZStack {
+                AmbientClusterGlow()
+                    .frame(
+                        width: geometry.size.width * 0.72,
+                        height: geometry.size.height * 0.66
+                    )
+                    .position(
+                        x: geometry.size.width * 0.52,
+                        y: geometry.size.height * 0.46
+                    )
+                    // Softer than the populated wall's. There is nothing on it
+                    // to light, so at full strength it read as a glow waiting
+                    // for something rather than as a backdrop.
+                    .opacity(hasEntered ? 0.55 : 0)
+                    .scaleEffect(hasEntered || reduceMotion ? 1 : 0.92)
+                    .animation(
+                        Chamfer.Motion.reduce(
+                            Chamfer.Motion.navigation,
+                            when: reduceMotion
+                        ),
+                        value: hasEntered
+                    )
+
+                EmptyWallCard(action: onConnectVault)
+                    .position(
+                        x: geometry.size.width * 0.52,
+                        y: geometry.size.height * 0.42
+                    )
+                    .opacity(hasEntered ? 1 : 0)
+                    .scaleEffect(hasEntered || reduceMotion ? 1 : 0.94)
+                    .animation(
+                        Chamfer.Motion.reduce(
+                            Chamfer.Motion.navigation.delay(0.04),
+                            when: reduceMotion
+                        ),
+                        value: hasEntered
+                    )
+            }
+        }
+        .frame(minHeight: 260)
+    }
+
     private func handleClockHover(_ isHovered: Bool) {
         guard isHovered != clockIsHovered else { return }
         clockIsHovered = isHovered
@@ -735,9 +1063,7 @@ public struct HomeScreenView: View {
         replacementSlot = slot
         Haptics.pop()
         withAnimation(
-            reduceMotion
-                ? Chamfer.Motion.quick
-                : .spring(duration: 0.18, bounce: 0.025)
+            Chamfer.Motion.reduce(Self.cardLiftCurve, when: reduceMotion)
         ) {
             replacementMotion = .lifting
         }
@@ -763,9 +1089,7 @@ public struct HomeScreenView: View {
             guard !Task.isCancelled, replacementSlot == slot else { return }
             Haptics.commit()
             withAnimation(
-                reduceMotion
-                    ? Chamfer.Motion.quick
-                    : .spring(duration: 0.24, bounce: 0.08)
+                Chamfer.Motion.reduce(Self.cardArriveCurve, when: reduceMotion)
             ) {
                 replacementMotion = .idle
             }
@@ -852,33 +1176,39 @@ private struct LiveClockGlyph: View {
     }
 }
 
+/// The warmth behind the wall.
+///
+/// Deliberately weak. At full strength it was the loudest thing on the page
+/// and the notes read as floating over a decorative background rather than
+/// resting on a surface — so it is now a suggestion of warmth, and the job of
+/// attaching each note to the page belongs to that note's own shadow.
 private struct AmbientClusterGlow: View {
     var body: some View {
         ZStack {
             GlowField(
                 color: Color(red: 0.99, green: 0.25, blue: 0.55),
-                opacity: 0.54
+                opacity: 0.20
             )
                 .scaleEffect(x: 0.74, y: 0.78)
                 .offset(x: 20, y: -44)
 
             GlowField(
                 color: Color(red: 1.00, green: 0.48, blue: 0.28),
-                opacity: 0.48
+                opacity: 0.18
             )
                 .scaleEffect(x: 1.04, y: 0.88)
                 .offset(x: -88, y: -14)
 
             GlowField(
                 color: Color(red: 1.00, green: 0.64, blue: 0.16),
-                opacity: 0.38
+                opacity: 0.14
             )
                 .scaleEffect(x: 0.96, y: 0.76)
                 .offset(x: -56, y: 76)
 
             GlowField(
                 color: Color(red: 1.00, green: 0.46, blue: 0.64),
-                opacity: 0.22
+                opacity: 0.09
             )
                 .scaleEffect(x: 0.62, y: 0.74)
                 .offset(x: 124, y: -6)
@@ -914,7 +1244,7 @@ private struct GlowField: View {
 
 private struct StickyNoteButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovered = false
+    @LegacyState private var isHovered = false
 
     let card: HomeNoteCardModel
     let placement: HomeNotePlacement
@@ -993,7 +1323,7 @@ private struct StickyNoteButton: View {
     }
 
     private var homeEntryAnimation: Animation {
-        guard !reduceMotion else { return Chamfer.Motion.quick }
+        guard !reduceMotion else { return Chamfer.Motion.reduced }
         let delay = min(Double(tapeVariant) * 0.015, 0.08)
         return Chamfer.Motion.navigation
             .delay(delay)
@@ -1004,12 +1334,12 @@ private struct StickyNoteButton: View {
             StickyNotePreview(
                 card: card,
                 fill: fill,
-                tapeVariant: tapeVariant,
+                hand: HomeNoteHand(id: card.id),
                 isHovered: isHovered || isOpening
             )
         }
         .buttonStyle(.plain)
-        .frame(width: 178, height: 162)
+        .frame(width: placement.size.width, height: placement.size.height)
         .background {
             TrackpadPanGesture(onEnded: onTrackpadSwipe)
         }
@@ -1020,15 +1350,11 @@ private struct StickyNoteButton: View {
         .zIndex(isOpening || replacementMotion == .lifting ? 20 : placement.depth)
         .onHover { isHovered = $0 }
         .animation(
-            reduceMotion
-                ? Chamfer.Motion.quick
-                : Chamfer.Motion.interactive,
+            Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
             value: isHovered
         )
         .animation(
-            reduceMotion
-                ? Chamfer.Motion.quick
-                : Chamfer.Motion.navigation,
+            Chamfer.Motion.reduce(Chamfer.Motion.navigation, when: reduceMotion),
             value: openingID
         )
         .animation(homeEntryAnimation, value: homeIsPresented)
@@ -1036,26 +1362,107 @@ private struct StickyNoteButton: View {
     }
 }
 
+/// The one card on an empty wall.
+///
+/// Built from the same parts as a real note — the fill, the tape, the tilt, the
+/// serif title — so it reads as the first thing pinned up rather than as an
+/// error message wearing a card's clothes. It hangs slightly straighter than a
+/// real note, which is the only hint that it is not one.
+private struct EmptyWallCard: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @LegacyState private var isHovered = false
+
+    let action: (@MainActor () -> Void)?
+    /// Taped and turned like any other note. It is one card rather than six, so
+    /// nothing here is comparative — but a perfectly square, perfectly centred
+    /// note is exactly the impression the wall behind it is trying not to give.
+    private let hand = HomeNoteHand(id: "chamfer.empty-wall")
+
+    var body: some View {
+        Button {
+            Haptics.pop()
+            action?()
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("A wall with nothing on it")
+                    .font(.system(size: 17, weight: .semibold, design: .serif))
+                    .foregroundStyle(Chamfer.Palette.pageText)
+                    .lineLimit(2)
+
+                Text("Point Chamfer at a folder of notes and they will gather here — the ones you are working on, and the ones it has tidied while you were elsewhere.")
+                    .font(.system(size: 11, weight: .regular, design: .serif))
+                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                    .lineSpacing(3)
+                    .lineLimit(5)
+                    .padding(.top, 8)
+
+                Spacer(minLength: 6)
+
+                Text(action == nil ? "NOTHING CONNECTED" : "CONNECT A VAULT")
+                    .font(.system(size: 8, weight: .medium))
+                    .tracking(0.6)
+                    .foregroundStyle(Chamfer.Palette.textOnPaperFaint)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.horizontal, 15)
+            .padding(.top, 20)
+            .padding(.bottom, 14)
+            .background(HomeNoteSlotPalette.fill(for: 0))
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(Chamfer.Palette.ink.opacity(0.07), lineWidth: 0.8)
+            }
+            // The empty wall is the first thing a new install shows, so this
+            // note is taped on the same way the others are rather than being
+            // the one perfectly centred strip on the page.
+            .overlay(alignment: .top) {
+                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                    .fill(Color.white.opacity(hand.tapeOpacity))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                            .stroke(Chamfer.Palette.ink.opacity(0.055), lineWidth: 0.6)
+                    }
+                    .frame(width: hand.tapeWidth, height: 9)
+                    .rotationEffect(.degrees(hand.tapeRotation))
+                    .offset(x: hand.tapeOffset.width, y: hand.tapeOffset.height)
+            }
+            .shadow(
+                color: Chamfer.Palette.ink.opacity(isHovered ? 0.24 : 0.19),
+                radius: isHovered ? 9 : 6,
+                x: 1,
+                y: isHovered ? 8 : 5
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(width: 200, height: 176)
+        .disabled(action == nil)
+        // Straighter than a real note, and it straightens further under the
+        // pointer exactly as the others do.
+        .rotationEffect(
+            .degrees(isHovered && !reduceMotion ? hand.rotation * 0.3 : hand.rotation)
+        )
+        .scaleEffect(isHovered ? 1.018 : 1)
+        .offset(y: isHovered && !reduceMotion ? -5 : 0)
+        .onHover { isHovered = $0 && action != nil }
+        .animation(
+            Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
+            value: isHovered
+        )
+        .accessibilityLabel("Connect a vault")
+        .accessibilityHint("Choose a folder of Markdown or plain-text notes for Chamfer to watch")
+    }
+}
+
 private struct StickyNotePreview: View {
     let card: HomeNoteCardModel
     let fill: Color
-    let tapeVariant: Int
+    /// Everything about this note that a person would have done slightly
+    /// differently: how wide the tape is, how hard it was pressed down, where
+    /// it landed and at what angle.
+    let hand: HomeNoteHand
     let isHovered: Bool
-
-    private var tapeWidth: CGFloat {
-        let widths: [CGFloat] = [39, 44, 36, 41, 38, 43]
-        return widths[tapeVariant % widths.count]
-    }
-
-    private var tapeOpacity: Double {
-        let opacities = [0.56, 0.48, 0.61, 0.52, 0.58, 0.50]
-        return opacities[tapeVariant % opacities.count]
-    }
-
-    private var tapeRotation: Double {
-        let rotations = [-1.2, 0.8, -0.5, 1.1, -0.9, 0.4]
-        return rotations[tapeVariant % rotations.count]
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1095,14 +1502,14 @@ private struct StickyNotePreview: View {
         }
         .overlay(alignment: .top) {
             RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                .fill(Color.white.opacity(tapeOpacity))
+                .fill(Color.white.opacity(hand.tapeOpacity))
                 .overlay {
                     RoundedRectangle(cornerRadius: 2.5, style: .continuous)
                         .stroke(Chamfer.Palette.ink.opacity(0.055), lineWidth: 0.6)
                 }
-                .frame(width: tapeWidth, height: 9)
-                .rotationEffect(.degrees(tapeRotation))
-                .offset(y: -4)
+                .frame(width: hand.tapeWidth, height: 9)
+                .rotationEffect(.degrees(hand.tapeRotation))
+                .offset(x: hand.tapeOffset.width, y: hand.tapeOffset.height)
         }
         .shadow(
             color: Chamfer.Palette.ink.opacity(
@@ -1117,21 +1524,26 @@ private struct StickyNotePreview: View {
         .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 
+    /// Darker and tighter than it was. A note is a piece of paper on a surface,
+    /// and the contact shadow is what says so — the ambient glow used to be
+    /// carrying that impression, badly, for all six at once.
     private var normalShadowOpacity: Double {
         switch card.role {
-        case .featured: 0.14
-        case .supporting: 0.105
-        case .recentlyCleaned: 0.085
-        case .background: 0.065
+        case .featured: 0.20
+        case .supporting: 0.17
+        case .recentlyCleaned: 0.15
+        case .background: 0.13
         }
     }
 
+    /// Short. A wide soft radius is a glow; a paper note casts a shadow that
+    /// stays near its own edge.
     private var normalShadowRadius: CGFloat {
         switch card.role {
-        case .featured: 9
-        case .supporting: 8
-        case .recentlyCleaned: 8
-        case .background: 7
+        case .featured: 6
+        case .supporting: 5
+        case .recentlyCleaned: 5
+        case .background: 4
         }
     }
 
