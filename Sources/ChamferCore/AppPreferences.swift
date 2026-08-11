@@ -52,15 +52,24 @@ public struct AppPreferences: Sendable, Equatable, Codable {
     /// A single switch that outranks model selection, because "never send my
     /// notes anywhere" is a promise the app makes.
     public var localProcessingOnly: Bool?
+    /// Whether the welcome has been through once.
+    ///
+    /// Nil rather than false for a fresh install, and the distinction is the
+    /// whole point: an app with no state file has never been opened, while one
+    /// carrying `false` was opened by a build that had no welcome to show. Both
+    /// see it; only a `true` written by finishing it stops it coming back.
+    public var hasSeenWelcome: Bool?
 
     public init(
         launchAtLogin: Bool? = nil,
-        localProcessingOnly: Bool? = nil
+        localProcessingOnly: Bool? = nil,
+        hasSeenWelcome: Bool? = nil
     ) {
         self.notifications = []
         self.configuredNotifications = []
         self.launchAtLogin = launchAtLogin
         self.localProcessingOnly = localProcessingOnly
+        self.hasSeenWelcome = hasSeenWelcome
     }
 
     /// Convenience for tests and migrations that intentionally specify every
@@ -69,12 +78,14 @@ public struct AppPreferences: Sendable, Equatable, Codable {
     public init(
         notifications: Set<NotificationCategory>,
         launchAtLogin: Bool? = nil,
-        localProcessingOnly: Bool? = nil
+        localProcessingOnly: Bool? = nil,
+        hasSeenWelcome: Bool? = nil
     ) {
         self.notifications = notifications
         configuredNotifications = Set(NotificationCategory.allCases)
         self.launchAtLogin = launchAtLogin
         self.localProcessingOnly = localProcessingOnly
+        self.hasSeenWelcome = hasSeenWelcome
     }
 
     public static let unconfigured = AppPreferences()
@@ -107,6 +118,7 @@ public struct AppPreferences: Sendable, Equatable, Codable {
         case configuredNotifications
         case launchAtLogin
         case localProcessingOnly
+        case hasSeenWelcome
     }
 
     /// Old state files had no intent markers. When an old key is present its
@@ -127,6 +139,7 @@ public struct AppPreferences: Sendable, Equatable, Codable {
             Bool.self,
             forKey: .localProcessingOnly
         )
+        hasSeenWelcome = try values.decodeIfPresent(Bool.self, forKey: .hasSeenWelcome)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -135,6 +148,7 @@ public struct AppPreferences: Sendable, Equatable, Codable {
         try values.encode(configuredNotifications, forKey: .configuredNotifications)
         try values.encodeIfPresent(launchAtLogin, forKey: .launchAtLogin)
         try values.encodeIfPresent(localProcessingOnly, forKey: .localProcessingOnly)
+        try values.encodeIfPresent(hasSeenWelcome, forKey: .hasSeenWelcome)
     }
 }
 

@@ -224,31 +224,13 @@ import Testing
     #expect(featured.document.url == meaningfulNote.url)
 }
 
-@Test func typicalWallUsesARestrainedDiamondHierarchy() throws {
-    let state = Fixtures.state(for: .typical)
-    let cards = HomeNoteCardModel.cards(from: state)
-    let placements = HomeNoteWallLayout.placements(for: cards)
-    let featuredCard = try #require(cards.first { $0.isFeatured })
-    let featured = try #require(placements.first { $0.id == featuredCard.id })
-    let cleanedCard = try #require(cards.first { $0.source == .cleaned })
-    let cleaned = try #require(placements.first { $0.id == cleanedCard.id })
-
-    #expect(featuredCard.document.url == state.pendingProposals[1].note.url)
-    #expect(featured.x > 0.48 && featured.x < 0.58)
-    #expect(featured.y > 0.22 && featured.y < 0.34)
-    #expect(featured.scale >= 1.08 && featured.scale <= 1.12)
-    #expect(abs(featured.rotation) < 3)
-    #expect(cleaned.y > featured.y)
-    #expect(cleaned.scale < featured.scale)
-    #expect(placements.allSatisfy { abs($0.rotation) <= 3 })
-}
-
 @Test func everyVisibleNoteReceivesAWallPlacement() {
     let cards = HomeNoteCardModel.cards(from: Fixtures.state(for: .flooded))
     let placements = HomeNoteWallLayout.placements(for: cards)
 
-    #expect(placements.count == cards.count)
-    #expect(Set(placements.map(\.id)) == Set(cards.map(\.id)))
+    #expect(placements.count == min(cards.count, HomeNoteWallLayout.slotCount))
+    #expect(Set(placements.map(\.id)).isSubset(of: Set(cards.map(\.id))))
+    #expect(Set(placements.map(\.id)).count == placements.count)
 }
 
 @Test func typicalWallContainsSixNotesWithDistinctHierarchyRoles() {
@@ -261,50 +243,65 @@ import Testing
     #expect(cards.filter { $0.role == .background }.count == 1)
 }
 
-@Test func sixNoteConstellationKeepsQuietNotesLowAndOneSupportAtLowerRight() throws {
+/// The wall is a scatter, not a pile. This is the check that keeps it one.
+///
+/// The hand-placed version read well at the height it was drawn at and
+/// collided at every other: two slots sat 0.14 apart across a canvas where a
+/// card is 0.26 wide, so notes covered each other's titles. Nothing in the
+/// coordinates said so, which is why the rule is now measured rather than
+/// eyeballed — at the shortest window Chamfer allows as well as the tallest.
+@Test func noTwoNotesOnTheWallEverOverlap() {
     let cards = HomeNoteCardModel.cards(from: Fixtures.state(for: .typical))
-    let placements = HomeNoteWallLayout.placements(for: cards)
-    let lowerRightCard = try #require(
-        cards.filter { $0.role == .supporting }.last
-    )
-    let lowerRight = try #require(placements.first { $0.id == lowerRightCard.id })
-    let cleanedCard = try #require(cards.first { $0.role == .recentlyCleaned })
-    let cleaned = try #require(placements.first { $0.id == cleanedCard.id })
-    let backgroundCard = try #require(cards.first { $0.role == .background })
-    let background = try #require(placements.first { $0.id == backgroundCard.id })
 
-    #expect(lowerRight.x > 0.65 && lowerRight.y > 0.55)
-    #expect(cleaned.x > 0.24 && cleaned.x < 0.50 && cleaned.y > 0.58)
-    #expect(background.x < 0.20)
-    #expect(background.scale < cleaned.scale)
-    #expect(background.depth < cleaned.depth)
+    for canvas in [
+        CGSize(width: 736, height: 300),
+        CGSize(width: 736, height: 420),
+        CGSize(width: 736, height: 560)
+    ] {
+        let placements = HomeNoteWallLayout.placements(for: cards, canvas: canvas)
+        for (index, placement) in placements.enumerated() {
+            for other in placements[(index + 1)...] {
+                #expect(
+                    !HomeNoteWallLayout.overlaps(placement, other, canvas: canvas),
+                    "\(placement.id) overlaps \(other.id) at \(canvas)"
+                )
+            }
+        }
+    }
 }
 
-@Test func featuredNoteSitsAboveItsTwoUpperSupports() throws {
+/// And stays on the wall it is scattered across.
+@Test func everyNoteStaysInsideTheCanvas() {
+    let cards = HomeNoteCardModel.cards(from: Fixtures.state(for: .typical))
+    let canvas = CGSize(width: 736, height: 420)
+
+    for placement in HomeNoteWallLayout.placements(for: cards, canvas: canvas) {
+        let halfWidth = HomeNoteWallLayout.cardSize.width * placement.scale / 2
+        let halfHeight = HomeNoteWallLayout.cardSize.height * placement.scale / 2
+        #expect(placement.x * canvas.width - halfWidth >= -1)
+        #expect(placement.x * canvas.width + halfWidth <= canvas.width + 1)
+        #expect(placement.y * canvas.height - halfHeight >= -1)
+        #expect(placement.y * canvas.height + halfHeight <= canvas.height + 1)
+    }
+}
+
+/// Hierarchy survives the lattice: the featured note leads on depth, and the
+/// quiet ones sit behind it rather than growing to compete.
+@Test func theFeaturedNoteLeadsOnDepthRatherThanOnSize() throws {
     let cards = HomeNoteCardModel.cards(from: Fixtures.state(for: .typical))
     let placements = HomeNoteWallLayout.placements(for: cards)
     let featuredCard = try #require(cards.first { $0.role == .featured })
-    let upperSupports = Array(cards.filter { $0.role == .supporting }.prefix(2))
     let featured = try #require(placements.first { $0.id == featuredCard.id })
-    let supportPlacements = upperSupports.compactMap { card in
-        placements.first { $0.id == card.id }
-    }
+    let backgroundCard = try #require(cards.first { $0.role == .background })
+    let background = try #require(placements.first { $0.id == backgroundCard.id })
 
-    #expect(supportPlacements.count == 2)
-    #expect(supportPlacements.allSatisfy { featured.y < $0.y })
+    #expect(featured.depth > background.depth)
+    #expect(featured.scale >= background.scale)
+    // A wall of notes, not a fan of playing cards.
+    #expect(placements.allSatisfy { abs($0.rotation) <= 3 })
 }
 
-@Test func readingListLeavesLaunchChecklistTitleClear() throws {
-    let cards = HomeNoteCardModel.cards(from: Fixtures.state(for: .typical))
-    let placements = HomeNoteWallLayout.placements(for: cards)
-    let reading = try #require(cards.first { $0.title == "Reading list" })
-    let launch = try #require(cards.first { $0.title == "Launch checklist" })
-    let readingPlacement = try #require(placements.first { $0.id == reading.id })
-    let launchPlacement = try #require(placements.first { $0.id == launch.id })
 
-    #expect(launchPlacement.y - readingPlacement.y >= 0.30)
-    #expect(launchPlacement.x >= readingPlacement.x)
-}
 
 @Test func closeControlIsSuppressedOnHomeButAvailableOnPages() {
     #expect(

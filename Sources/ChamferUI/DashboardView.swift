@@ -209,6 +209,8 @@ public struct DashboardView: View {
     /// The gallery leaves it at its default and the control does nothing there,
     /// which is correct: the harness has no settings window to open.
     private let onOpenSettings: () -> Void
+    @Binding private var showsWelcome: Bool
+    private let onFinishWelcome: () -> Void
     /// Raising a folder picker means `NSOpenPanel`, which means AppKit and a
     /// running application — neither of which a view should assume. Injected
     /// for the same reason as the two above.
@@ -240,6 +242,11 @@ public struct DashboardView: View {
         noteLoadError: String? = nil,
         onClose: @escaping () -> Void = {},
         onOpenSettings: @escaping () -> Void = {},
+        /// Shown over the dashboard on a first run, and again from the menu.
+        /// A binding rather than a flag so closing it writes through to the
+        /// preferences that decide whether it comes back.
+        showsWelcome: Binding<Bool> = .constant(false),
+        onFinishWelcome: @escaping () -> Void = {},
         onConnectVault: @escaping @MainActor @Sendable () -> Void = {},
         review: ReviewActions? = nil,
         vaults: VaultActions? = nil
@@ -248,6 +255,8 @@ public struct DashboardView: View {
         self.noteLoadError = noteLoadError
         self.onClose = onClose
         self.onOpenSettings = onOpenSettings
+        _showsWelcome = showsWelcome
+        self.onFinishWelcome = onFinishWelcome
         self.onConnectVault = onConnectVault
         self.injectedReview = review
         self.injectedVaults = vaults
@@ -349,6 +358,25 @@ public struct DashboardView: View {
             closeZone
 
             changeHistoryOverlay
+        }
+        // Above everything, including the gutter and the bar: a welcome you can
+        // click behind is not a welcome, and the first thing somebody does with
+        // an app they have never used is click.
+        .overlay {
+            if showsWelcome {
+                WelcomeView {
+                    withAnimation(
+                        Chamfer.Motion.reduce(
+                            Chamfer.Motion.navigation,
+                            when: reduceMotion
+                        )
+                    ) {
+                        showsWelcome = false
+                    }
+                    onFinishWelcome()
+                }
+                .transition(.opacity)
+            }
         }
         .background {
             TrackpadPanGesture(onEnded: handleTabGesture)

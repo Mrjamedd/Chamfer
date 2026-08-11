@@ -331,3 +331,62 @@ func liveModelNote() async throws {
 
 private let noteUnderTest =
     "/Users/anthonymurphy/Documents/Chamfer Test Vault/18 Scratch Pad.md"
+
+/// The same corpus against every model tier this Mac has downloaded.
+///
+/// The prompts were written against one rung of the ladder. Which rung a person
+/// gets is decided by their hardware, so a rule that only works on the 4B is a
+/// rule that works for some of them — and the smaller tiers are exactly where
+/// instruction-following gets thin.
+///
+///   Scripts/test.sh --filter liveModelLadder
+@Test(.tags(.live))
+func liveModelLadder() async throws {
+    OllamaEndpoint.shared.current = OllamaAPI.privateBaseURL
+    let client = OllamaClient(baseURL: OllamaAPI.privateBaseURL)
+    guard await client.isAvailable(),
+          let installed = try? await client.installedModelIDs(), !installed.isEmpty else {
+        Issue.record("No local runtime on 11913")
+        return
+    }
+
+    var report: [String] = []
+    for modelID in installed.sorted() {
+        let model = NamedRewriter(
+            modelID: modelID,
+            rewriter: OllamaRewriter(model: modelID, client: client)
+        )
+        var passed = 0
+        var failures: [String] = []
+        let started = ContinuousClock.now
+
+        for item in corpus {
+            let outcome = await RewritePipeline.run(
+                text: item.input,
+                documentTitle: "Project Atlas",
+                policy: policy(
+                    for: item.mode,
+                    capitals: item.capitalisation ?? false
+                ),
+                model: model,
+                effort: .balanced
+            )
+            let produced: String
+            switch outcome {
+            case .unchanged: produced = item.input
+            case let .proposed(product): produced = product.text
+            case let .failed(failure): produced = "«FAILED: \(failure.detail)»"
+            }
+            if produced == item.target {
+                passed += 1
+            } else {
+                failures.append("      \(item.name)\n        want \(item.target.debugDescription)\n        got  \(produced.debugDescription)")
+            }
+        }
+
+        let elapsed = ContinuousClock.now - started
+        report.append("\(modelID): \(passed)/\(corpus.count)  (\(elapsed))")
+        report.append(contentsOf: failures)
+    }
+    print("LADDER · effort balanced\n" + report.joined(separator: "\n"))
+}

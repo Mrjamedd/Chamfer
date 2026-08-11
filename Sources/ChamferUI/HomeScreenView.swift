@@ -466,84 +466,114 @@ public struct HomeNotePlacement: Identifiable, Equatable {
 }
 
 public enum HomeNoteWallLayout {
-    public static func placements(for cards: [HomeNoteCardModel]) -> [HomeNotePlacement] {
-        var placements: [HomeNotePlacement] = []
-        let featured = cards.first { $0.role == .featured }
-        let supportingNotes = cards.filter { $0.role == .supporting }
-        let cleanedNotes = cards.filter { $0.role == .recentlyCleaned }
-        let backgroundNotes = cards.filter { $0.role == .background }
+    /// The drawn size of one note, which is what any talk of overlap is
+    /// measured against.
+    public static let cardSize = CGSize(width: 200, height: 176)
 
-        if let featured {
-            placements.append(
-                .init(
-                    id: featured.id,
-                    x: 0.52,
-                    y: 0.27,
-                    rotation: 1.2,
-                    scale: 1.10,
-                    depth: 4
-                )
+    /// The most notes the wall shows at once.
+    public static let slotCount = 6
+
+    /// Cards are laid on a three-by-two lattice and then knocked off their
+    /// centres, rather than placed at hand-chosen coordinates.
+    ///
+    /// The hand-chosen version read well on the height it was drawn at and
+    /// collided everywhere else: two of its slots sat 0.14 apart across a
+    /// canvas where a card is 0.26 wide, so notes overlapped and covered each
+    /// other's titles. Nothing about that was visible in the numbers.
+    ///
+    /// The lattice makes the scatter a budget rather than a guess. Each card
+    /// owns a cell, the jitter below is a fraction of whatever space is left
+    /// over inside it, and `slack` shrinks the cards first if the window is too
+    /// short to seat two rows. Overlap stops being a thing to be careful about.
+    private static let jitter: [(x: CGFloat, y: CGFloat, rotation: Double)] = [
+        (-0.10, 0.16, -2.0),
+        (0.14, -0.14, 1.6),
+        (-0.06, -0.20, 1.2),
+        (0.18, 0.12, -1.3),
+        (-0.16, -0.10, 1.8),
+        (0.08, 0.18, -1.0)
+    ]
+
+    public static func placements(
+        for cards: [HomeNoteCardModel],
+        canvas: CGSize = CGSize(width: 736, height: 420)
+    ) -> [HomeNotePlacement] {
+        guard !cards.isEmpty else { return [] }
+
+        let columns = 3
+        let rows = 2
+        let cell = CGSize(
+            width: canvas.width / CGFloat(columns),
+            height: canvas.height / CGFloat(rows)
+        )
+
+        // Shrink to fit before scattering. A card that does not fit its own
+        // cell cannot be placed safely at any offset.
+        let scale = min(
+            1.0,
+            min(cell.width / cardSize.width, cell.height / cardSize.height)
+        )
+        let placed = CGSize(
+            width: cardSize.width * scale,
+            height: cardSize.height * scale
+        )
+        // What is left inside a cell once the card is in it. Half of it in each
+        // direction is the most a card can move without leaving its own cell,
+        // and the jitter table is a fraction of that.
+        let slack = CGSize(
+            width: max(0, cell.width - placed.width) / 2,
+            height: max(0, cell.height - placed.height) / 2
+        )
+
+        return cards.prefix(slotCount).enumerated().map { index, card in
+            let column = index % columns
+            let row = index / columns
+            let centreX = (CGFloat(column) + 0.5) / CGFloat(columns)
+            let centreY = (CGFloat(row) + 0.5) / CGFloat(rows)
+            let wobble = jitter[index % jitter.count]
+
+            return HomeNotePlacement(
+                id: card.id,
+                x: centreX + wobble.x * slack.width / max(canvas.width, 1),
+                y: centreY + wobble.y * slack.height / max(canvas.height, 1),
+                rotation: wobble.rotation,
+                // Kept inside the fit above: a featured note leans forward with
+                // depth and tint rather than by growing into its neighbour.
+                scale: scale * (card.role == .featured ? 1.0 : 0.97),
+                depth: depth(for: card.role)
             )
         }
+    }
 
-        let supportingSlots: [(CGFloat, CGFloat, Double, CGFloat, Double)] = [
-            (0.22, 0.31, -2.0, 0.98, 3),
-            (0.84, 0.29, 1.6, 0.97, 3),
-            (0.85, 0.66, -1.3, 0.94, 2),
-            (0.24, 0.73, 1.8, 0.91, 2),
-            (0.52, 0.79, -1.0, 0.89, 1)
-        ]
-        for (card, slot) in zip(supportingNotes, supportingSlots) {
-            placements.append(
-                .init(
-                    id: card.id,
-                    x: slot.0,
-                    y: slot.1,
-                    rotation: slot.2,
-                    scale: slot.3,
-                    depth: slot.4
-                )
+    private static func depth(for role: HomeNoteCardModel.Role) -> Double {
+        switch role {
+        case .featured: 4
+        case .supporting: 3
+        case .recentlyCleaned: 2
+        case .background: 1
+        }
+    }
+
+    /// Whether two placements would draw over one another on `canvas`.
+    /// Used by the test that keeps this honest.
+    public static func overlaps(
+        _ first: HomeNotePlacement,
+        _ second: HomeNotePlacement,
+        canvas: CGSize
+    ) -> Bool {
+        func rect(_ placement: HomeNotePlacement) -> CGRect {
+            let size = CGSize(
+                width: cardSize.width * placement.scale,
+                height: cardSize.height * placement.scale
+            )
+            return CGRect(
+                x: placement.x * canvas.width - size.width / 2,
+                y: placement.y * canvas.height - size.height / 2,
+                width: size.width,
+                height: size.height
             )
         }
-
-        let cleanedSlots: [(CGFloat, CGFloat, Double, CGFloat, Double)] = [
-            (0.38, 0.71, 1.2, 0.90, 1),
-            (0.54, 0.76, -1.3, 0.88, 1)
-        ]
-        for (card, slot) in zip(cleanedNotes, cleanedSlots) {
-            placements.append(
-                .init(
-                    id: card.id,
-                    x: slot.0,
-                    y: slot.1,
-                    rotation: slot.2,
-                    scale: slot.3,
-                    depth: slot.4
-                )
-            )
-        }
-
-        let backgroundSlots: [(CGFloat, CGFloat, Double, CGFloat, Double)] = [
-            (0.14, 0.57, -1.5, 0.84, 0),
-            (0.87, 0.55, 1.7, 0.83, 0),
-            (0.18, 0.78, -1.8, 0.82, 0),
-            (0.83, 0.78, 1.4, 0.81, 0),
-            (0.50, 0.82, -0.8, 0.80, 0)
-        ]
-        for (card, slot) in zip(backgroundNotes, backgroundSlots) {
-            placements.append(
-                .init(
-                    id: card.id,
-                    x: slot.0,
-                    y: slot.1,
-                    rotation: slot.2,
-                    scale: slot.3,
-                    depth: slot.4
-                )
-            )
-        }
-
-        return placements
+        return rect(first).intersects(rect(second))
     }
 
     public static func openingOffset(
@@ -665,12 +695,7 @@ public struct HomeScreenView: View {
         // the right line rather than an empty one that pops in.
         _greeting = State(initialValue: clock.greeting(name: name))
         let deck = HomeNoteDeck(cards: HomeNoteCardModel.deckCards(from: state))
-        let placementsByID = Dictionary(
-            uniqueKeysWithValues: HomeNoteWallLayout.placements(for: deck.visible).map {
-                ($0.id, $0)
-            }
-        )
-        slotPlacements = deck.visible.compactMap { placementsByID[$0.id] }
+        slotPlacements = HomeNoteWallLayout.placements(for: deck.visible)
         _noteDeck = State(initialValue: deck)
     }
 

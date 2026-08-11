@@ -37,6 +37,17 @@ struct ChamferApp: App {
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
+            // Somebody who skipped the welcome, or met it before they had a
+            // folder connected, needs a way back to it that is not deleting
+            // their preferences.
+            CommandGroup(replacing: .help) {
+                Button("Welcome to Chamfer") {
+                    NotificationCenter.default.post(
+                        name: .chamferShowWelcome,
+                        object: nil
+                    )
+                }
+            }
         }
 
         // Command-comma. App-wide controls live here rather than in the main
@@ -64,6 +75,12 @@ private struct RootWindow: View {
     @Bindable var model: AppModel
     let notes: NoteService
     let rewrites: RewriteService
+    /// Resolved once, as the window is made. Reading it later would reopen the
+    /// welcome every time the view was rebuilt.
+    @LegacyState private var showsWelcome = WelcomeFlow.shouldPresent(
+        for: AppPreferences.unconfigured
+    )
+    @LegacyState private var hasResolvedWelcome = false
 
     var body: some View {
         // Everything in the window reads its "now" from here, so a rewrite
@@ -82,12 +99,27 @@ private struct RootWindow: View {
             ).configuration,
             onClose: { NSApp.keyWindow?.close() },
             onOpenSettings: { openSettings() },
+            showsWelcome: $showsWelcome,
+            onFinishWelcome: {
+                model.preferences.hasSeenWelcome = true
+                model.flush()
+            },
             onConnectVault: connectVault,
             review: reviewActions,
             vaults: vaultActions
         )
         .frame(width: Chamfer.Window.width, height: Chamfer.Window.height)
         .environment(\.chamferScanProgress, notes.progress)
+        .onAppear {
+            // Restored state arrives after the window is built, so the decision
+            // waits for it — and is taken once, not on every rebuild.
+            guard !hasResolvedWelcome else { return }
+            hasResolvedWelcome = true
+            showsWelcome = WelcomeFlow.shouldPresent(for: model.preferences)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chamferShowWelcome)) { _ in
+            showsWelcome = true
+        }
     }
 
     private func connectVault() {
