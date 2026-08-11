@@ -20,11 +20,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use the newest Xcode on the runner
-        run: sudo xcode-select -switch /Applications/Xcode.app
-
-      - name: Show toolchain
-        run: swift --version
+      # `/Applications/Xcode.app` is whichever version the image made
+      # default, and on macos-15 that is Swift 6.1 — older than this package's
+      # tools version, which fails with a message about the manifest rather
+      # than about the toolchain. Pick the newest one actually installed.
+      - name: Select a toolchain new enough for the package
+        run: |
+          set -euo pipefail
+          echo "Xcodes on this runner:"
+          ls -d /Applications/Xcode*.app
+          NEWEST="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          echo "Selecting $NEWEST"
+          sudo xcode-select -switch "$NEWEST"
+          swift --version
+          REQUIRED="6.2"
+          FOUND="$(swift --version 2>&1 | sed -nE 's/.*Swift version ([0-9]+\.[0-9]+).*/\1/p' | head -1)"
+          if [ "$(printf '%s\n%s\n' "$REQUIRED" "$FOUND" | sort -V | head -1)" != "$REQUIRED" ]; then
+            echo "::error::Chamfer needs Swift $REQUIRED; the newest toolchain here is $FOUND."
+            exit 1
+          fi
 
       - name: Cache SwiftPM dependencies
         uses: actions/cache@v4

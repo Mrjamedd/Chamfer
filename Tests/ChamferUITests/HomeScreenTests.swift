@@ -310,9 +310,18 @@ import Testing
     #expect(heights.count >= 4, "only \(heights.count) distinct heights")
     #expect(widths.count >= 4, "only \(widths.count) distinct widths")
 
-    // And no row shares a baseline, which is the giveaway a grid leaves.
+    // And neither a row nor a column shares an edge, which is the giveaway a
+    // grid leaves however much the individual notes wobble.
     let topRow = placements.prefix(3).map { ($0.y * canvas.height).rounded() }
     #expect(Set(topRow).count == 3, "the top row is aligned: \(topRow)")
+    let rowSpread = (topRow.max() ?? 0) - (topRow.min() ?? 0)
+    #expect(rowSpread > 20, "the top row varies by only \(rowSpread)pt")
+
+    for column in 0..<3 {
+        let above = placements[column].x * canvas.width
+        let below = placements[column + 3].x * canvas.width
+        #expect(abs(above - below) > 15, "column \(column) is stacked: \(above), \(below)")
+    }
 }
 
 /// The same note has to look the same tomorrow. Deriving the imperfection from
@@ -489,3 +498,4 @@ private func homeDeckCard(_ index: Int) -> HomeNoteCardModel {
         role: .background
     )
 }
+

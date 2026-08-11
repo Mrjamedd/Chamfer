@@ -519,7 +519,7 @@ public struct HomeNoteHand: Equatable {
             height: distance * sin(angle)
         )
         rotation = Self.value(seed, slice: 2, in: -2.0...2.0)
-        widthScale = CGFloat(Self.value(seed, slice: 3, in: 0.94...1.04))
+        widthScale = CGFloat(Self.value(seed, slice: 3, in: 0.90...1.08))
         tapeWidth = CGFloat(Self.value(seed, slice: 4, in: 30...52))
         tapeOpacity = Self.value(seed, slice: 5, in: 0.38...0.66)
         tapeRotation = Self.value(seed, slice: 6, in: -7.0...7.0)
@@ -539,6 +539,24 @@ public enum HomeNoteWallLayout {
 
     /// The most notes the wall shows at once.
     public static let slotCount = 6
+
+    /// How far each row slides sideways, and each column sits up or down.
+    ///
+    /// Per-note wobble is not enough on its own: however much each note moves,
+    /// a column still shares a left edge and a row still shares a baseline, and
+    /// that is the grid you can read in a screenshot. These shifts are the
+    /// wall's doing rather than any note's, which is why they are indexed by
+    /// position and not by identity.
+    private static let rowShift: [CGFloat] = [-0.07, 0.10]
+    private static let columnShift: [CGFloat] = [0.06, -0.09, 0.03]
+
+    static func rowStagger(row: Int, cell: CGSize) -> CGFloat {
+        rowShift[row % rowShift.count] * cell.width
+    }
+
+    static func columnLift(column: Int, cell: CGSize) -> CGFloat {
+        columnShift[column % columnShift.count] * cell.height
+    }
 
     /// Cards are seated on a three-by-two lattice and then knocked off it.
     ///
@@ -582,13 +600,27 @@ public enum HomeNoteWallLayout {
                 width: max(0, cell.width - placed.width) / 2,
                 height: max(0, cell.height - placed.height) / 2
             )
+            // The wall's shifts and the note's own wobble come out of one
+            // budget, and it is their sum that has to stay inside the cell. Two
+            // separate clamps would each pass while together walking the note
+            // into its neighbour.
+            let displacement = CGSize(
+                width: hand.offset.width + rowStagger(row: index / columns, cell: cell),
+                height: hand.offset.height + columnLift(column: index % columns, cell: cell)
+            )
             let offset = CGSize(
-                width: min(max(hand.offset.width, -slack.width), slack.width),
-                height: min(max(hand.offset.height, -slack.height), slack.height)
+                width: min(max(displacement.width, -slack.width), slack.width),
+                height: min(max(displacement.height, -slack.height), slack.height)
             )
 
             let column = index % columns
             let row = index / columns
+            // Rows are staggered and columns are stepped, and neither is the
+            // note's own doing — it is the wall's. Without this every note in
+            // a column shares a left edge and every note in a row shares a
+            // baseline, which is the grid you can still read however much the
+            // individual notes wobble. The shifts are a fraction of a cell, so
+            // they come out of the same slack budget as everything else.
             let centreX = (CGFloat(column) + 0.5) * cell.width
             let centreY = (CGFloat(row) + 0.5) * cell.height
 
