@@ -16,11 +16,26 @@ let package = Package(
         .library(name: "ChamferCore", targets: ["ChamferCore"]),
         .library(name: "ChamferUI", targets: ["ChamferUI"])
     ],
+    dependencies: [
+        // Updates for an app distributed outside the App Store. Pinned to a
+        // minor version: an updater is the one component whose own bugs ship
+        // themselves to everybody.
+        .package(
+            url: "https://github.com/sparkle-project/Sparkle.git",
+            from: "2.9.5"
+        )
+    ],
     targets: [
         .executableTarget(
             // Menu bar shell, review window, settings.
             name: "Chamfer",
-            dependencies: ["ChamferCore", "ChamferUI", "ChamferWatch", "ChamferRewrite"],
+            dependencies: [
+                "ChamferCore",
+                "ChamferUI",
+                "ChamferWatch",
+                "ChamferRewrite",
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             path: "Sources/Chamfer"
         ),
         .executableTarget(

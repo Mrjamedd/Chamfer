@@ -1,0 +1,56 @@
+name: CI
+
+# Every push and every pull request. This is the half of the pipeline that
+# never ships anything: it builds Chamfer and runs the suite, and that is all.
+# Releasing is a separate workflow on a tag, so unfinished work on a branch
+# cannot reach anybody's Mac by being pushed.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use the newest Xcode on the runner
+        run: sudo xcode-select -switch /Applications/Xcode.app
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Build
+        run: swift build --build-tests
+
+      # The live tests talk to an Ollama that is not on a CI runner and take
+      # minutes when they are. They are tagged so they can be excluded here and
+      # run deliberately on a machine that has a model.
+      - name: Test
+        run: Scripts/test.sh --skip liveModel --skip trace
+
+      # A release is only ever as good as the bundle, so the thing the release
+      # workflow will build is built here too — unsigned, and thrown away.
+      - name: Package a bundle
+        run: Scripts/package.sh 0.0.0 ${{ github.run_number }}
+
+      - name: Check the bundle is a bundle
+        run: |
+          APP=.build/artifacts/Chamfer.app
+          test -x "$APP/Contents/MacOS/Chamfer"
+          test -f "$APP/Contents/Info.plist"
+          test -d "$APP/Contents/Frameworks/Sparkle.framework"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Contents/Info.plist"

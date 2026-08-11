@@ -48,6 +48,10 @@ struct ChamferApp: App {
                     )
                 }
             }
+            // Beside About, where every Mac app outside the App Store puts it.
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesCommand()
+            }
         }
 
         // Command-comma. App-wide controls live here rather than in the main

@@ -1,0 +1,211 @@
+name: Release
+
+# Tags ship. Pushes do not.
+#
+#   git tag v1.2.0 && git push origin v1.2.0
+#
+# builds Chamfer, signs it with a Developer ID, has Apple notarise it, staples
+# the ticket, signs the archive with Sparkle's EdDSA key, publishes a GitHub
+# Release, and appends an entry to the appcast on GitHub Pages. Installed copies
+# see the new version on their next daily check.
+#
+# One-time setup is in docs/RELEASING.md. Until the secrets exist this workflow
+# fails loudly at the first missing one rather than publishing something
+# unsigned.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, without the leading v"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use the newest Xcode on the runner
+        run: sudo xcode-select -switch /Applications/Xcode.app
+
+      - name: Work out the version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          # Monotonic and derived, so two tags can never share a build number.
+          BUILD="$(git rev-list --count HEAD)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION ($BUILD)"
+
+      - name: Refuse to ship a build that does not pass
+        run: Scripts/test.sh --skip liveModel --skip trace
+
+      - name: Import the Developer ID certificate
+        env:
+          CERT_P12: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$CERT_P12" || { echo "DEVELOPER_ID_P12_BASE64 is not set"; exit 1; }
+          echo "$CERT_P12" | base64 --decode > /tmp/developer-id.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import /tmp/developer-id.p12 -k build.keychain \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm -f /tmp/developer-id.p12
+
+      - name: Package
+        env:
+          SPARKLE_FEED_URL: ${{ vars.SPARKLE_FEED_URL }}
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$SPARKLE_FEED_URL" || { echo "SPARKLE_FEED_URL variable is not set"; exit 1; }
+          test -n "$SPARKLE_PUBLIC_KEY" || { echo "SPARKLE_PUBLIC_KEY variable is not set"; exit 1; }
+          Scripts/package.sh "${{ steps.version.outputs.version }}" "${{ steps.version.outputs.build }}"
+
+      - name: Sign
+        env:
+          IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
+        run: |
+          set -euo pipefail
+          APP=.build/artifacts/Chamfer.app
+          # Inside out: the framework and its helpers carry their own
+          # signatures, and a bundle signed before its contents are is a bundle
+          # notarisation rejects.
+          find "$APP/Contents/Frameworks" -name "*.framework" -maxdepth 1 | while read -r framework; do
+            codesign --force --options runtime --timestamp \
+              --sign "$IDENTITY" "$framework"
+          done
+          codesign --force --options runtime --timestamp \
+            --sign "$IDENTITY" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      - name: Notarise
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          APP=.build/artifacts/Chamfer.app
+          ditto -c -k --keepParent "$APP" /tmp/notarise.zip
+          xcrun notarytool submit /tmp/notarise.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          # Stapling is what lets the app open on a Mac that is offline.
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+
+      - name: Archive the notarised app
+        id: archive
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          NAME="Chamfer-$VERSION.zip"
+          ditto -c -k --keepParent .build/artifacts/Chamfer.app "/tmp/$NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "path=/tmp/$NAME" >> "$GITHUB_OUTPUT"
+          echo "size=$(stat -f%z "/tmp/$NAME")" >> "$GITHUB_OUTPUT"
+
+      - name: Sign the archive for Sparkle
+        id: sparkle
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$SPARKLE_PRIVATE_KEY" || { echo "SPARKLE_PRIVATE_KEY is not set"; exit 1; }
+          # The signing tools ship inside Sparkle's SwiftPM artifact, which the
+          # build has already fetched. The explicit path avoids the deprecated
+          # DSA copy that also lives under bin/.
+          SIGN_UPDATE=".build/artifacts/sparkle/Sparkle/bin/sign_update"
+          test -x "$SIGN_UPDATE" || { echo "sign_update not found at $SIGN_UPDATE"; exit 1; }
+          # Piped rather than passed: a key on a command line is a key in the
+          # process list.
+          SIGNATURE="$(echo "$SPARKLE_PRIVATE_KEY" | "$SIGN_UPDATE" \
+            "${{ steps.archive.outputs.path }}" --ed-key-file -)"
+          # Emitted as: sparkle:edSignature="..." length="..."
+          echo "fragment=$SIGNATURE" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release create "v$VERSION" "${{ steps.archive.outputs.path }}" \
+            --title "Chamfer $VERSION" \
+            --generate-notes \
+            --verify-tag || \
+          gh release upload "v$VERSION" "${{ steps.archive.outputs.path }}" --clobber
+
+      - name: Append to the appcast
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          BUILD="${{ steps.version.outputs.build }}"
+          URL="https://github.com/${{ github.repository }}/releases/download/v$VERSION/${{ steps.archive.outputs.name }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin gh-pages || true
+          git checkout gh-pages 2>/dev/null || git checkout --orphan gh-pages
+          git rm -rf --cached . >/dev/null 2>&1 || true
+
+          if [ ! -f appcast.xml ]; then
+            cat > appcast.xml <<'HEAD'
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Chamfer</title>
+              <description>Updates for Chamfer.</description>
+              <language>en</language>
+            </channel>
+          </rss>
+          HEAD
+          fi
+
+          ITEM="    <item>
+            <title>$VERSION</title>
+            <pubDate>$(date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>
+            <sparkle:version>$BUILD</sparkle:version>
+            <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/${{ github.repository }}/releases/tag/v$VERSION</link>
+            <enclosure url=\"$URL\" ${{ steps.sparkle.outputs.fragment }} type=\"application/octet-stream\" />
+          </item>"
+
+          # Newest first, directly under <channel>'s description.
+          python3 - "$ITEM" <<'PY'
+          import sys, re
+          item = sys.argv[1]
+          xml = open("appcast.xml").read()
+          marker = "</language>"
+          xml = xml.replace(marker, marker + "\n" + item, 1)
+          open("appcast.xml", "w").write(xml)
+          PY
+
+          git add appcast.xml
+          git commit -m "Chamfer $VERSION"
+          git push origin gh-pages

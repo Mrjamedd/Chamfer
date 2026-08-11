@@ -223,3 +223,40 @@ private struct SpellingRewriter: Rewriter {
         section.replacingOccurrences(of: "teh ", with: "the ")
     }
 }
+
+// MARK: - Shipping
+
+/// The release pipeline is only as trustworthy as the bundle it signs, and the
+/// bundle is assembled by a shell script that nothing else checks.
+@Test
+func thePackagingScriptDescribesAnAppThatCanUpdateItself() throws {
+    let root = URL(filePath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let script = try String(
+        contentsOf: root.appending(path: "Scripts/package.sh"),
+        encoding: .utf8
+    )
+
+    // Sparkle reads both of these from Info.plist and does nothing without
+    // them, so a build that omits one silently never updates.
+    #expect(script.contains("SUFeedURL"))
+    #expect(script.contains("SUPublicEDKey"))
+    // And a bundle without the framework inside it cannot launch at all.
+    #expect(script.contains("Sparkle.framework"))
+    #expect(script.contains("@executable_path/../Frameworks"))
+    // The identifier is what an update is matched against; it must not drift.
+    #expect(script.contains("com.chamfer.app"))
+
+    // Tags ship, pushes do not. If this ever inverts, every unfinished commit
+    // on a branch becomes a release.
+    let release = try String(
+        contentsOf: root.appending(path: ".github/workflows/release.yml"),
+        encoding: .utf8
+    )
+    #expect(release.contains("tags: [\"v*\"]"))
+    #expect(!release.contains("branches:"))
+    #expect(release.contains("notarytool"))
+    #expect(release.contains("stapler"))
+}
