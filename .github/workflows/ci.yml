@@ -16,7 +16,12 @@ concurrency:
 
 jobs:
   build-and-test:
-    runs-on: macos-15
+    # macOS 26, not 15. The macos-15 image carries Xcode 26, so the package
+    # builds there — and then nothing can run, because a bundle built for
+    # macOS 26 cannot be loaded by a machine running 15. The tests failed with
+    # "built for macOS 26.0 which is newer than running OS", which is a
+    # sentence about the runner and not about the code.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
