@@ -285,6 +285,70 @@ import Testing
     }
 }
 
+/// Not overlapping is the floor, not the goal. A wall where every note is the
+/// same size at the same angle on the same spacing reads as a contact sheet —
+/// which is what the lattice produced before the notes were knocked off it.
+@Test func theWallIsIrregularEnoughToLookPlacedRatherThanLaidOut() {
+    let cards = HomeNoteCardModel.cards(from: Fixtures.state(for: .typical))
+    let canvas = CGSize(width: 736, height: 420)
+    let placements = HomeNoteWallLayout.placements(for: cards, canvas: canvas)
+
+    #expect(placements.count == 6)
+
+    // Angles vary, and stay subtle. Past a couple of degrees it stops reading
+    // as a note somebody pressed on and starts reading as an effect.
+    let rotations = placements.map(\.rotation)
+    #expect(Set(rotations.map { ($0 * 100).rounded() }).count == rotations.count)
+    #expect(rotations.allSatisfy { abs($0) <= 2 })
+    #expect(rotations.contains { $0 < -0.4 })
+    #expect(rotations.contains { $0 > 0.4 })
+
+    // Sizes vary: a short scribble is not the same piece of paper as a note
+    // with a paragraph on it.
+    let heights = Set(placements.map { ($0.size.height).rounded() })
+    let widths = Set(placements.map { ($0.size.width).rounded() })
+    #expect(heights.count >= 4, "only \(heights.count) distinct heights")
+    #expect(widths.count >= 4, "only \(widths.count) distinct widths")
+
+    // And no row shares a baseline, which is the giveaway a grid leaves.
+    let topRow = placements.prefix(3).map { ($0.y * canvas.height).rounded() }
+    #expect(Set(topRow).count == 3, "the top row is aligned: \(topRow)")
+}
+
+/// The same note has to look the same tomorrow. Deriving the imperfection from
+/// the note's identity is what separates "placed" from "shuffled every render".
+@Test func aNoteKeepsItsOwnCharacterBetweenLaunches() {
+    let first = HomeNoteHand(id: "notes/Project Atlas.md")
+    let again = HomeNoteHand(id: "notes/Project Atlas.md")
+    let other = HomeNoteHand(id: "notes/Grocery List.md")
+
+    #expect(first == again)
+    #expect(first != other)
+    #expect(first.offset != other.offset)
+    // Eight points is where an offset stops reading as a mistake.
+    let distance = (first.offset.width * first.offset.width
+        + first.offset.height * first.offset.height).squareRoot()
+    #expect(distance >= 7.9 && distance <= 20.1, "offset is \(distance)pt")
+}
+
+/// Tape a person tore and pressed down is never the same twice, and never
+/// centred. Identical strips were the strongest signal nobody put these here.
+@Test func noTwoNotesShareTheSameTape() {
+    let hands = HomeNoteCardModel
+        .cards(from: Fixtures.state(for: .typical))
+        .prefix(6)
+        .map { HomeNoteHand(id: $0.id) }
+
+    #expect(Set(hands.map { ($0.tapeWidth).rounded() }).count >= 5)
+    #expect(Set(hands.map { ($0.tapeOpacity * 100).rounded() }).count >= 5)
+    #expect(Set(hands.map { ($0.tapeRotation * 10).rounded() }).count >= 5)
+    #expect(hands.allSatisfy { abs($0.tapeRotation) <= 7 })
+    // Off-centre, and over the edge rather than floating above it.
+    #expect(hands.contains { $0.tapeOffset.width < -3 })
+    #expect(hands.contains { $0.tapeOffset.width > 3 })
+    #expect(hands.allSatisfy { $0.tapeOffset.height < 0 })
+}
+
 /// Hierarchy survives the lattice: the featured note leads on depth, and the
 /// quiet ones sit behind it rather than growing to compete.
 @Test func theFeaturedNoteLeadsOnDepthRatherThanOnSize() throws {
@@ -340,6 +404,7 @@ import Testing
         y: 0.30,
         rotation: -2,
         scale: 1,
+        size: HomeNoteWallLayout.cardSize,
         depth: 2
     )
 
@@ -361,6 +426,7 @@ import Testing
         y: 0.25,
         rotation: -2,
         scale: 1,
+        size: HomeNoteWallLayout.cardSize,
         depth: 2
     )
 

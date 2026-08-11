@@ -461,39 +461,98 @@ public struct HomeNotePlacement: Identifiable, Equatable {
     public let x: CGFloat
     public let y: CGFloat
     public let rotation: Double
+    /// A multiplier the motion applies on top of `size`. Placement variation
+    /// lives in `size`, so hover and opening arithmetic stays about motion.
     public let scale: CGFloat
+    /// This note's own dimensions, in points. Notes are not all one rectangle:
+    /// a two-line scribble is smaller than a paragraph, the way it would be if
+    /// somebody had torn one off a pad.
+    public let size: CGSize
     public let depth: Double
 }
 
+/// The small deviations that separate "placed by hand" from "laid out".
+///
+/// Derived from the note's own identity rather than its slot, and derived
+/// rather than random: a wall that rearranges itself every time the view is
+/// rebuilt is worse than a tidy one. The same note gets the same character
+/// every launch, and no two notes share one.
+public struct HomeNoteHand: Equatable {
+    public let offset: CGSize
+    public let rotation: Double
+    public let widthScale: CGFloat
+    public let tapeWidth: CGFloat
+    public let tapeOpacity: Double
+    public let tapeRotation: Double
+    public let tapeOffset: CGSize
+
+    /// FNV-1a. Any stable hash would do; this one is short and does not vary
+    /// between processes the way `hashValue` does.
+    static func seed(_ text: String) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return hash
+    }
+
+    /// A value in `range`, taken from `slice` bits of the seed.
+    static func value(
+        _ seed: UInt64,
+        slice: Int,
+        in range: ClosedRange<Double>
+    ) -> Double {
+        let shifted = (seed >> UInt64(slice * 8)) & 0xff
+        let fraction = Double(shifted) / 255.0
+        return range.lowerBound + fraction * (range.upperBound - range.lowerBound)
+    }
+
+    public init(id: String) {
+        let seed = Self.seed(id)
+        // Eight to twenty points, in whichever direction this note leans. Below
+        // eight it reads as a rendering error rather than as placement.
+        let distance = Self.value(seed, slice: 0, in: 8...20)
+        let angle = Self.value(seed, slice: 1, in: 0...(2 * .pi))
+        offset = CGSize(
+            width: distance * cos(angle),
+            height: distance * sin(angle)
+        )
+        rotation = Self.value(seed, slice: 2, in: -2.0...2.0)
+        widthScale = CGFloat(Self.value(seed, slice: 3, in: 0.94...1.04))
+        tapeWidth = CGFloat(Self.value(seed, slice: 4, in: 30...52))
+        tapeOpacity = Self.value(seed, slice: 5, in: 0.38...0.66)
+        tapeRotation = Self.value(seed, slice: 6, in: -7.0...7.0)
+        // Tape a person tore off and pressed down lands off-centre and at
+        // varying depth over the edge. Centred, identical strips are the single
+        // clearest sign nobody put these here.
+        tapeOffset = CGSize(
+            width: Self.value(seed, slice: 7, in: -26...26),
+            height: Self.value(seed, slice: 3, in: -7...(-1))
+        )
+    }
+}
+
 public enum HomeNoteWallLayout {
-    /// The drawn size of one note, which is what any talk of overlap is
-    /// measured against.
-    public static let cardSize = CGSize(width: 200, height: 176)
+    /// The card's base dimensions before this note's own variation.
+    public static let cardSize = CGSize(width: 178, height: 162)
 
     /// The most notes the wall shows at once.
     public static let slotCount = 6
 
-    /// Cards are laid on a three-by-two lattice and then knocked off their
-    /// centres, rather than placed at hand-chosen coordinates.
+    /// Cards are seated on a three-by-two lattice and then knocked off it.
     ///
-    /// The hand-chosen version read well on the height it was drawn at and
-    /// collided everywhere else: two of its slots sat 0.14 apart across a
-    /// canvas where a card is 0.26 wide, so notes overlapped and covered each
-    /// other's titles. Nothing about that was visible in the numbers.
+    /// The lattice is what makes overlap impossible; it is not what the wall
+    /// should look like. Left at their cell centres the notes read as a
+    /// contact sheet — equally spaced, equally sized, equally angled — so each
+    /// one is moved by eight to twenty points in its own direction, turned by
+    /// up to two degrees, and sized to how much it has to say. Every one of
+    /// those deviations is clamped to the room inside its own cell, so the
+    /// wall can be as irregular as it likes and still never stack.
     ///
-    /// The lattice makes the scatter a budget rather than a guess. Each card
-    /// owns a cell, the jitter below is a fraction of whatever space is left
-    /// over inside it, and `slack` shrinks the cards first if the window is too
-    /// short to seat two rows. Overlap stops being a thing to be careful about.
-    private static let jitter: [(x: CGFloat, y: CGFloat, rotation: Double)] = [
-        (-0.10, 0.16, -2.0),
-        (0.14, -0.14, 1.6),
-        (-0.06, -0.20, 1.2),
-        (0.18, 0.12, -1.3),
-        (-0.16, -0.10, 1.8),
-        (0.08, 0.18, -1.0)
-    ]
-
+    /// Controlled imperfection: the offsets come from the note's identity, so
+    /// they are the same on every launch. A wall that reshuffles itself while
+    /// you look at it is not more natural, only less trustworthy.
     public static func placements(
         for cards: [HomeNoteCardModel],
         canvas: CGSize = CGSize(width: 736, height: 420)
@@ -507,42 +566,61 @@ public enum HomeNoteWallLayout {
             height: canvas.height / CGFloat(rows)
         )
 
-        // Shrink to fit before scattering. A card that does not fit its own
-        // cell cannot be placed safely at any offset.
-        let scale = min(
-            1.0,
-            min(cell.width / cardSize.width, cell.height / cardSize.height)
-        )
-        let placed = CGSize(
-            width: cardSize.width * scale,
-            height: cardSize.height * scale
-        )
-        // What is left inside a cell once the card is in it. Half of it in each
-        // direction is the most a card can move without leaving its own cell,
-        // and the jitter table is a fraction of that.
-        let slack = CGSize(
-            width: max(0, cell.width - placed.width) / 2,
-            height: max(0, cell.height - placed.height) / 2
-        )
-
         return cards.prefix(slotCount).enumerated().map { index, card in
+            let hand = HomeNoteHand(id: card.id)
+            let wanted = size(for: card, hand: hand)
+
+            // Shrink only if this note cannot fit its cell at all.
+            let fit = min(
+                1.0,
+                min(cell.width / wanted.width, cell.height / wanted.height)
+            )
+            let placed = CGSize(width: wanted.width * fit, height: wanted.height * fit)
+
+            // Whatever room is left is how far the note may wander.
+            let slack = CGSize(
+                width: max(0, cell.width - placed.width) / 2,
+                height: max(0, cell.height - placed.height) / 2
+            )
+            let offset = CGSize(
+                width: min(max(hand.offset.width, -slack.width), slack.width),
+                height: min(max(hand.offset.height, -slack.height), slack.height)
+            )
+
             let column = index % columns
             let row = index / columns
-            let centreX = (CGFloat(column) + 0.5) / CGFloat(columns)
-            let centreY = (CGFloat(row) + 0.5) / CGFloat(rows)
-            let wobble = jitter[index % jitter.count]
+            let centreX = (CGFloat(column) + 0.5) * cell.width
+            let centreY = (CGFloat(row) + 0.5) * cell.height
 
             return HomeNotePlacement(
                 id: card.id,
-                x: centreX + wobble.x * slack.width / max(canvas.width, 1),
-                y: centreY + wobble.y * slack.height / max(canvas.height, 1),
-                rotation: wobble.rotation,
-                // Kept inside the fit above: a featured note leans forward with
-                // depth and tint rather than by growing into its neighbour.
-                scale: scale * (card.role == .featured ? 1.0 : 0.97),
+                x: (centreX + offset.width) / max(canvas.width, 1),
+                y: (centreY + offset.height) / max(canvas.height, 1),
+                rotation: hand.rotation,
+                scale: 1,
+                size: placed,
                 depth: depth(for: card.role)
             )
         }
+    }
+
+    /// How big this note wants to be.
+    ///
+    /// A note with two words on it is a smaller piece of paper than one
+    /// carrying a paragraph. Forcing both into the same rectangle is most of
+    /// what made the wall look printed rather than pinned.
+    static func size(for card: HomeNoteCardModel, hand: HomeNoteHand) -> CGSize {
+        let content = card.title.count + card.preview.count
+        // Roughly a short scribble at 40 characters and a full note at 220.
+        let fullness = min(max(Double(content - 40) / 180, 0), 1)
+        let height = cardSize.height * CGFloat(0.86 + 0.26 * fullness)
+        // A featured note earns a little more room; it is the one being
+        // recommended.
+        let emphasis: CGFloat = card.role == .featured ? 1.05 : 1.0
+        return CGSize(
+            width: cardSize.width * hand.widthScale * emphasis,
+            height: height * emphasis
+        )
     }
 
     private static func depth(for role: HomeNoteCardModel.Role) -> Double {
@@ -562,15 +640,11 @@ public enum HomeNoteWallLayout {
         canvas: CGSize
     ) -> Bool {
         func rect(_ placement: HomeNotePlacement) -> CGRect {
-            let size = CGSize(
-                width: cardSize.width * placement.scale,
-                height: cardSize.height * placement.scale
-            )
-            return CGRect(
-                x: placement.x * canvas.width - size.width / 2,
-                y: placement.y * canvas.height - size.height / 2,
-                width: size.width,
-                height: size.height
+            CGRect(
+                x: placement.x * canvas.width - placement.size.width / 2,
+                y: placement.y * canvas.height - placement.size.height / 2,
+                width: placement.size.width,
+                height: placement.size.height
             )
         }
         return rect(first).intersects(rect(second))
@@ -802,8 +876,8 @@ public struct HomeScreenView: View {
                 ZStack {
                     AmbientClusterGlow()
                         .frame(
-                            width: geometry.size.width * 0.90,
-                            height: geometry.size.height * 0.92
+                            width: geometry.size.width * 0.72,
+                            height: geometry.size.height * 0.66
                         )
                         .position(
                             x: geometry.size.width * 0.52,
@@ -880,8 +954,8 @@ public struct HomeScreenView: View {
             ZStack {
                 AmbientClusterGlow()
                     .frame(
-                        width: geometry.size.width * 0.90,
-                        height: geometry.size.height * 0.92
+                        width: geometry.size.width * 0.72,
+                        height: geometry.size.height * 0.66
                     )
                     .position(
                         x: geometry.size.width * 0.52,
@@ -1070,33 +1144,39 @@ private struct LiveClockGlyph: View {
     }
 }
 
+/// The warmth behind the wall.
+///
+/// Deliberately weak. At full strength it was the loudest thing on the page
+/// and the notes read as floating over a decorative background rather than
+/// resting on a surface — so it is now a suggestion of warmth, and the job of
+/// attaching each note to the page belongs to that note's own shadow.
 private struct AmbientClusterGlow: View {
     var body: some View {
         ZStack {
             GlowField(
                 color: Color(red: 0.99, green: 0.25, blue: 0.55),
-                opacity: 0.54
+                opacity: 0.20
             )
                 .scaleEffect(x: 0.74, y: 0.78)
                 .offset(x: 20, y: -44)
 
             GlowField(
                 color: Color(red: 1.00, green: 0.48, blue: 0.28),
-                opacity: 0.48
+                opacity: 0.18
             )
                 .scaleEffect(x: 1.04, y: 0.88)
                 .offset(x: -88, y: -14)
 
             GlowField(
                 color: Color(red: 1.00, green: 0.64, blue: 0.16),
-                opacity: 0.38
+                opacity: 0.14
             )
                 .scaleEffect(x: 0.96, y: 0.76)
                 .offset(x: -56, y: 76)
 
             GlowField(
                 color: Color(red: 1.00, green: 0.46, blue: 0.64),
-                opacity: 0.22
+                opacity: 0.09
             )
                 .scaleEffect(x: 0.62, y: 0.74)
                 .offset(x: 124, y: -6)
@@ -1222,12 +1302,12 @@ private struct StickyNoteButton: View {
             StickyNotePreview(
                 card: card,
                 fill: fill,
-                tapeVariant: tapeVariant,
+                hand: HomeNoteHand(id: card.id),
                 isHovered: isHovered || isOpening
             )
         }
         .buttonStyle(.plain)
-        .frame(width: 178, height: 162)
+        .frame(width: placement.size.width, height: placement.size.height)
         .background {
             TrackpadPanGesture(onEnded: onTrackpadSwipe)
         }
@@ -1261,6 +1341,10 @@ private struct EmptyWallCard: View {
     @LegacyState private var isHovered = false
 
     let action: (@MainActor () -> Void)?
+    /// Taped and turned like any other note. It is one card rather than six, so
+    /// nothing here is comparative — but a perfectly square, perfectly centred
+    /// note is exactly the impression the wall behind it is trying not to give.
+    private let hand = HomeNoteHand(id: "chamfer.empty-wall")
 
     var body: some View {
         Button {
@@ -1298,22 +1382,25 @@ private struct EmptyWallCard: View {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .stroke(Chamfer.Palette.ink.opacity(0.07), lineWidth: 0.8)
             }
+            // The empty wall is the first thing a new install shows, so this
+            // note is taped on the same way the others are rather than being
+            // the one perfectly centred strip on the page.
             .overlay(alignment: .top) {
                 RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                    .fill(Color.white.opacity(0.56))
+                    .fill(Color.white.opacity(hand.tapeOpacity))
                     .overlay {
                         RoundedRectangle(cornerRadius: 2.5, style: .continuous)
                             .stroke(Chamfer.Palette.ink.opacity(0.055), lineWidth: 0.6)
                     }
-                    .frame(width: 39, height: 9)
-                    .rotationEffect(.degrees(-1.2))
-                    .offset(y: -4)
+                    .frame(width: hand.tapeWidth, height: 9)
+                    .rotationEffect(.degrees(hand.tapeRotation))
+                    .offset(x: hand.tapeOffset.width, y: hand.tapeOffset.height)
             }
             .shadow(
-                color: Chamfer.Palette.ink.opacity(isHovered ? 0.19 : 0.14),
-                radius: isHovered ? 12 : 9,
+                color: Chamfer.Palette.ink.opacity(isHovered ? 0.24 : 0.19),
+                radius: isHovered ? 9 : 6,
                 x: 1,
-                y: isHovered ? 8 : 6
+                y: isHovered ? 8 : 5
             )
         }
         .buttonStyle(.plain)
@@ -1321,7 +1408,9 @@ private struct EmptyWallCard: View {
         .disabled(action == nil)
         // Straighter than a real note, and it straightens further under the
         // pointer exactly as the others do.
-        .rotationEffect(.degrees(isHovered && !reduceMotion ? 0.2 : 0.6))
+        .rotationEffect(
+            .degrees(isHovered && !reduceMotion ? hand.rotation * 0.3 : hand.rotation)
+        )
         .scaleEffect(isHovered ? 1.018 : 1)
         .offset(y: isHovered && !reduceMotion ? -5 : 0)
         .onHover { isHovered = $0 && action != nil }
@@ -1337,23 +1426,11 @@ private struct EmptyWallCard: View {
 private struct StickyNotePreview: View {
     let card: HomeNoteCardModel
     let fill: Color
-    let tapeVariant: Int
+    /// Everything about this note that a person would have done slightly
+    /// differently: how wide the tape is, how hard it was pressed down, where
+    /// it landed and at what angle.
+    let hand: HomeNoteHand
     let isHovered: Bool
-
-    private var tapeWidth: CGFloat {
-        let widths: [CGFloat] = [39, 44, 36, 41, 38, 43]
-        return widths[tapeVariant % widths.count]
-    }
-
-    private var tapeOpacity: Double {
-        let opacities = [0.56, 0.48, 0.61, 0.52, 0.58, 0.50]
-        return opacities[tapeVariant % opacities.count]
-    }
-
-    private var tapeRotation: Double {
-        let rotations = [-1.2, 0.8, -0.5, 1.1, -0.9, 0.4]
-        return rotations[tapeVariant % rotations.count]
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1393,14 +1470,14 @@ private struct StickyNotePreview: View {
         }
         .overlay(alignment: .top) {
             RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                .fill(Color.white.opacity(tapeOpacity))
+                .fill(Color.white.opacity(hand.tapeOpacity))
                 .overlay {
                     RoundedRectangle(cornerRadius: 2.5, style: .continuous)
                         .stroke(Chamfer.Palette.ink.opacity(0.055), lineWidth: 0.6)
                 }
-                .frame(width: tapeWidth, height: 9)
-                .rotationEffect(.degrees(tapeRotation))
-                .offset(y: -4)
+                .frame(width: hand.tapeWidth, height: 9)
+                .rotationEffect(.degrees(hand.tapeRotation))
+                .offset(x: hand.tapeOffset.width, y: hand.tapeOffset.height)
         }
         .shadow(
             color: Chamfer.Palette.ink.opacity(
@@ -1415,21 +1492,26 @@ private struct StickyNotePreview: View {
         .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 
+    /// Darker and tighter than it was. A note is a piece of paper on a surface,
+    /// and the contact shadow is what says so — the ambient glow used to be
+    /// carrying that impression, badly, for all six at once.
     private var normalShadowOpacity: Double {
         switch card.role {
-        case .featured: 0.14
-        case .supporting: 0.105
-        case .recentlyCleaned: 0.085
-        case .background: 0.065
+        case .featured: 0.20
+        case .supporting: 0.17
+        case .recentlyCleaned: 0.15
+        case .background: 0.13
         }
     }
 
+    /// Short. A wide soft radius is a glow; a paper note casts a shadow that
+    /// stays near its own edge.
     private var normalShadowRadius: CGFloat {
         switch card.role {
-        case .featured: 9
-        case .supporting: 8
-        case .recentlyCleaned: 8
-        case .background: 7
+        case .featured: 6
+        case .supporting: 5
+        case .recentlyCleaned: 5
+        case .background: 4
         }
     }
 
