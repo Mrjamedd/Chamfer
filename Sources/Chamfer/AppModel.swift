@@ -67,6 +67,28 @@ final class AppModel {
         dashboard.runState = isPaused ? .idle : .paused
     }
 
+    /// Shows the note at `url`, from wherever the request came from.
+    ///
+    /// Both halves are the point. Setting `openNote` says *which* note; the
+    /// destination says the window should be looking at it — and the second
+    /// cannot be inferred from the first, because the window only moves when
+    /// `openNote` changes value. Pressing "Open note" on the note you were just
+    /// reading assigns the value it already had, so nothing changed and nothing
+    /// happened. That is exactly the case the button is for: you edited a note,
+    /// Chamfer proposed a rewrite on it, and you want to go back and look.
+    ///
+    /// Matching is by standardized path, as every other note lookup in the app
+    /// is. A note that is no longer indexed moves nothing: being taken to a page
+    /// that cannot show what was asked for is worse than staying put.
+    func showNote(at url: URL) {
+        let key = url.standardizedFileURL
+        guard let document = dashboard.searchableNotes.first(where: {
+            $0.url.standardizedFileURL == key
+        }) else { return }
+        dashboard.openNote = document
+        requestedDestination = DashboardView.Tab.notes
+    }
+
     /// The model a given vault will actually run, after the app-wide local-only
     /// switch has had its say. Nil means either the vault is not set up, or the
     /// user's settings rule out every option — both of which the interface

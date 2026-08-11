@@ -130,7 +130,10 @@ public actor LocalModelInstaller {
 
         let task = Task<LocalModelInstallOutcome, Never> { [client] in
             guard await client.isAvailable() else {
-                return .failed("Ollama isn’t running. Start it and try again.")
+                // Not an instruction to go and start something: the runtime is
+                // Chamfer's own child process, so this is the app reporting on
+                // itself. Pressing the download again re-provisions it.
+                return .failed("The local runtime isn’t answering. Try again.")
             }
 
             // 1. Presence, before anything is downloaded.

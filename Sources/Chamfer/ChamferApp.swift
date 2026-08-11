@@ -100,9 +100,7 @@ private struct RootWindow: View {
     private var vaultActions: VaultActions {
         VaultActions(
             openNote: { summary in
-                model.dashboard.openNote = model.dashboard.searchableNotes.first {
-                    $0.url.standardizedFileURL == summary.url.standardizedFileURL
-                }
+                model.showNote(at: summary.url)
             },
             updateConfiguration: { vaultID, policy in
                 model.updateConfiguration(policy, for: vaultID)
@@ -156,10 +154,7 @@ private struct RootWindow: View {
             reject: { rewrites.reject($0) },
             regenerate: { rewrites.regenerate($0) },
             openNote: { summary in
-                guard let document = model.dashboard.searchableNotes.first(
-                    where: { $0.url == summary.url }
-                ) else { return }
-                model.dashboard.openNote = document
+                model.showNote(at: summary.url)
             },
             retry: { rewrites.regenerate($0) },
             restore: { rewrites.restore($0) }

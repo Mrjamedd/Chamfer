@@ -12,6 +12,18 @@ public enum ModelsBackendID: String, CaseIterable, Hashable, Sendable {
     case cloud
 }
 
+/// Whether the cloud path is something this build can actually do.
+///
+/// One constant, read by the row that draws it and by the state that opens its
+/// configuration, so "coming soon" cannot be a label on a panel that still
+/// works. Flip it when cloud ships; nothing else needs to change.
+public enum ModelsCloudAvailability {
+    public static let isAvailable = false
+
+    public static let comingSoonTitle = "COMING SOON"
+    public static let comingSoonDetail = "Cloud models aren't part of this build yet. Everything Chamfer does today runs on your Mac."
+}
+
 public enum ModelsConnectionState: Equatable, Sendable {
     case notConnected
     case connected
@@ -156,7 +168,10 @@ public struct ModelsDashboardState: Equatable, Sendable {
         self.effort = effort
     }
 
+    /// Refused while cloud is unreleased, so the panel cannot be reached by a
+    /// keyboard shortcut, restored state, or a caller that has not heard.
     public mutating func openCloudConfiguration() {
+        guard ModelsCloudAvailability.isAvailable else { return }
         cloudConfigurationOpen = true
     }
 
@@ -184,7 +199,10 @@ public struct ModelsDashboardState: Equatable, Sendable {
             // arrives a moment after Ollama starts answering must not take the
             // card backwards.
             if runtimeInstall != nil, !localRuntimeAvailable { return "SETTING UP" }
-            if !localRuntimeAvailable { return "OLLAMA REQUIRED" }
+            // A missing runtime is not a state this card reports. Chamfer
+            // installs it, so "the runtime is not here yet" and "the model is
+            // not here yet" are the same sentence to the person reading it, and
+            // one download answers both.
             return switch installation {
             case .installed: "READY"
             case .downloading: "DOWNLOADING"
@@ -205,20 +223,26 @@ public struct ModelsDashboardState: Equatable, Sendable {
 /// assembled at the call site. Title, symbol and whether it does anything all
 /// come from the same switch, so the button cannot say "Download" while the
 /// action activates.
+///
+/// There is no case for fetching Ollama. The runtime is Chamfer's errand — the
+/// app downloads, verifies and runs its own copy — so the only thing this card
+/// ever asks anybody for is the model.
 public enum ModelsLocalAction: Equatable, Sendable {
-    /// Chamfer is installing Ollama itself. Nothing to press.
+    /// Chamfer is setting the runtime up and does not yet know whether the
+    /// model is on disk. Nothing to press until it does.
     case preparingRuntime
-    case installRuntime
     case download
     case downloading
     case activate
     case alreadyActive
 
-    public var title: String {
+    /// The button's words. The download names the model rather than saying
+    /// "model", because a control that starts a multi-gigabyte download should
+    /// say what arrives.
+    public func title(model: LocalModelDescriptor) -> String {
         switch self {
         case .preparingRuntime: "Setting Up…"
-        case .installRuntime: "Get Ollama"
-        case .download: "Download Model"
+        case .download: "Download \(model.displayName)"
         case .downloading: "Downloading…"
         case .activate: "Use This Model"
         case .alreadyActive: "In Use"
@@ -228,7 +252,6 @@ public enum ModelsLocalAction: Equatable, Sendable {
     public var symbol: String {
         switch self {
         case .preparingRuntime: "arrow.down"
-        case .installRuntime: "arrow.up.right"
         case .download: "arrow.down"
         case .downloading: "arrow.down"
         case .activate: "checkmark"
@@ -238,7 +261,7 @@ public enum ModelsLocalAction: Equatable, Sendable {
 
     public var isEnabled: Bool {
         switch self {
-        case .installRuntime, .download, .activate: true
+        case .download, .activate: true
         case .preparingRuntime, .downloading, .alreadyActive: false
         }
     }
@@ -246,12 +269,15 @@ public enum ModelsLocalAction: Equatable, Sendable {
 
 public enum ModelsLocalPresentation {
     public static func action(for state: ModelsDashboardState) -> ModelsLocalAction {
-        // Chamfer is fetching the runtime. Telling somebody to go and get it
-        // while it is already arriving is the worst of both.
+        // Chamfer is fetching the runtime and cannot yet ask it what is on
+        // disk, so a model already installed would read as missing. Waiting the
+        // moment out is better than offering a download that is not needed.
         if state.runtimeInstall != nil, !state.localRuntimeAvailable {
             return .preparingRuntime
         }
-        guard state.localRuntimeAvailable else { return .installRuntime }
+        // No runtime and none on its way — a first run before provisioning
+        // started, or one that failed — still offers the model. Pressing it
+        // arranges the runtime first; that is not the user's problem to solve.
         switch state.installation {
         case .downloading: return .downloading
         case .notInstalled: return .download
@@ -264,9 +290,6 @@ public enum ModelsLocalPresentation {
     public static func statusDetail(for state: ModelsDashboardState) -> String {
         if let runtimeInstall = state.runtimeInstall, !state.localRuntimeAvailable {
             return runtimeInstall.stage
-        }
-        if !state.localRuntimeAvailable {
-            return "Ollama runs the model. Install it once, and Chamfer handles the rest."
         }
         if !state.hasRoomForModel, state.installation != .installed {
             return "Not enough free space for the \(state.recommendedModel.downloadSizeLabel) download."

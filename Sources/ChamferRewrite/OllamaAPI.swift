@@ -58,8 +58,10 @@ public enum OllamaAPI {
                 "model": model,
                 "stream": false,
                 // Hybrid-reasoning models think before answering when asked to.
-                // Only Max asks: below it the deliberation costs more time than
-                // the edit it is deciding on, and the mode has promised speed.
+                // Nothing asks. The runtime bills that thinking to the same
+                // `num_predict` as the answer, so a request sized for a passage
+                // is spent before a character is written — and given room to
+                // finish, one sentence took minutes. See `allowsDeliberation`.
                 "think": profile.allowsDeliberation,
                 // Held in memory between the requests of one note. Without it
                 // the weights are unloaded and reloaded between paragraphs,
@@ -109,7 +111,21 @@ public enum OllamaAPI {
             throw ModelAccessError.invalidResponse
         }
         let result = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !result.isEmpty else { throw ModelAccessError.emptyResponse }
+        guard !result.isEmpty else {
+            // A thinking model that ran out of room mid-thought reports exactly
+            // this: everything in `thinking`, nothing in `content`, and
+            // `done_reason: length`. Named separately because "the model
+            // returned no text" sent somebody looking at the model when the
+            // answer was a budget one line away.
+            let thinking = (message["thinking"] as? String) ?? ""
+            if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw ModelAccessError.rejected(
+                    status: 200,
+                    message: "The model used its whole budget thinking and never wrote an answer."
+                )
+            }
+            throw ModelAccessError.emptyResponse
+        }
         return result
     }
 

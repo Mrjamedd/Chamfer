@@ -36,10 +36,14 @@ import Testing
     #expect(ModelEffort.max.profile.requestsPerUnit == 3)
 }
 
-@Test func onlyMaxSpendsTimeOnDeliberationAndOnlyBaseWorksWithoutNeighbours() {
+@Test func noModeAsksTheLocalModelToThinkAndOnlyBaseWorksWithoutNeighbours() {
     #expect(!ModelEffort.base.profile.allowsDeliberation)
     #expect(!ModelEffort.balanced.profile.allowsDeliberation)
-    #expect(ModelEffort.max.profile.allowsDeliberation)
+    // Off for max too. The models Chamfer ships bill their reasoning against
+    // the answer's own token budget, so a thinking request comes back empty —
+    // and given room to finish, takes minutes on a passage the other modes
+    // handle in seconds.
+    #expect(!ModelEffort.max.profile.allowsDeliberation)
 
     #expect(!ModelEffort.base.profile.includesNeighbourContext)
     #expect(ModelEffort.balanced.profile.includesNeighbourContext)

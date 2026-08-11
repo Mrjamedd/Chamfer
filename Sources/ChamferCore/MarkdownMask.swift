@@ -54,7 +54,15 @@ public enum MarkdownMask {
     /// Chosen to survive a language model unchanged. Braces are rare in prose,
     /// the token is plain ASCII, and it carries no Markdown meaning that a
     /// model might feel invited to tidy up.
-    static func token(_ index: Int) -> String { "{{CHAMFER-\(index)}}" }
+    ///
+    /// Deliberately not named after Chamfer. It used to be `{{CHAMFER-0}}`,
+    /// which shares its word with the `<<<CHAMFER-XXXX:EDIT>>>` fence around the
+    /// passage — and every prompt ends by telling the model not to repeat the
+    /// markers. A 4B model reads one instruction about one word and strips both,
+    /// which discarded the rewrite of any note containing a heading, a bullet, a
+    /// link or a tag. Measured, not theorised: the checking pass returned the
+    /// passage with all three of its placeholders removed.
+    static func token(_ index: Int) -> String { "{{KEEP\(index)}}" }
 
     /// Ranges of the note that must not be shown to the model, in order.
     private struct Region {

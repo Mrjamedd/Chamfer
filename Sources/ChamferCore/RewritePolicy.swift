@@ -236,6 +236,18 @@ public struct VaultConfiguration: Sendable, Equatable, Codable {
     public var inactivityDelay: TimeInterval?
     public var sweep: SweepSchedule?
     public var preserved: MarkdownStructure?
+    /// Whether a lower-case word that should be capitalised — or the reverse —
+    /// counts as something to fix.
+    ///
+    /// A choice rather than a rule because both answers are defensible and the
+    /// right one is about the person's notes, not about English. "friday" and
+    /// "i think" are mistakes in a document somebody else will read, and how
+    /// half the world types in a note only they will open. Chamfer cannot tell
+    /// which kind of vault it is looking at, so it asks.
+    ///
+    /// Unset means on: it is part of spelling for most people, and it is the
+    /// answer that surprises fewest of them.
+    public var fixesCapitalisation: Bool?
 
     public init(
         mode: RewriteMode? = nil,
@@ -243,7 +255,8 @@ public struct VaultConfiguration: Sendable, Equatable, Codable {
         runTrigger: VaultRunTrigger? = nil,
         inactivityDelay: TimeInterval? = nil,
         sweep: SweepSchedule? = nil,
-        preserved: MarkdownStructure? = nil
+        preserved: MarkdownStructure? = nil,
+        fixesCapitalisation: Bool? = nil
     ) {
         self.mode = mode
         self.application = application
@@ -251,6 +264,7 @@ public struct VaultConfiguration: Sendable, Equatable, Codable {
         self.inactivityDelay = inactivityDelay
         self.sweep = sweep
         self.preserved = preserved
+        self.fixesCapitalisation = fixesCapitalisation
     }
 
     /// Migration bridge for state written before partial configuration was
@@ -262,6 +276,7 @@ public struct VaultConfiguration: Sendable, Equatable, Codable {
         inactivityDelay = policy.inactivityDelay
         sweep = policy.sweep
         preserved = policy.preserved
+        fixesCapitalisation = policy.fixesCapitalisation
     }
 
     /// Missing in the same order as the editor presents the rows.
@@ -312,6 +327,10 @@ public struct VaultConfiguration: Sendable, Equatable, Codable {
             inactivityDelay: resolvedDelay,
             sweep: resolvedSweep,
             preserved: preserved,
+            // Deliberately absent from `missingFields`: a vault configured
+            // before this option existed keeps working, and gets the answer
+            // most people mean by "spelling".
+            fixesCapitalisation: fixesCapitalisation ?? RewritePolicy.capitalisationDefault,
             modelID: modelID
         )
     }
@@ -329,8 +348,13 @@ public struct RewritePolicy: Sendable, Equatable, Codable {
     public var inactivityDelay: TimeInterval
     public var sweep: SweepSchedule
     public var preserved: MarkdownStructure
+    /// Whether case corrections are in scope. See `VaultConfiguration`.
+    public var fixesCapitalisation: Bool
     /// Identifier of the chosen model, as `ChamferRewrite` names them.
     public var modelID: String
+
+    /// What a vault gets when it has never been asked.
+    public static let capitalisationDefault = true
 
     /// What a vault stores for "the model on this Mac".
     ///
@@ -348,6 +372,7 @@ public struct RewritePolicy: Sendable, Equatable, Codable {
         inactivityDelay: TimeInterval,
         sweep: SweepSchedule,
         preserved: MarkdownStructure,
+        fixesCapitalisation: Bool = RewritePolicy.capitalisationDefault,
         modelID: String
     ) {
         self.mode = mode
@@ -356,6 +381,7 @@ public struct RewritePolicy: Sendable, Equatable, Codable {
         self.inactivityDelay = inactivityDelay
         self.sweep = sweep
         self.preserved = preserved
+        self.fixesCapitalisation = fixesCapitalisation
         self.modelID = modelID
     }
 
@@ -366,6 +392,7 @@ public struct RewritePolicy: Sendable, Equatable, Codable {
         case inactivityDelay
         case sweep
         case preserved
+        case fixesCapitalisation
         case modelID
     }
 
@@ -378,6 +405,11 @@ public struct RewritePolicy: Sendable, Equatable, Codable {
         runTrigger = try values.decodeIfPresent(VaultRunTrigger.self, forKey: .runTrigger)
             ?? (sweep == .never ? .inactivity : .schedule)
         preserved = try values.decode(MarkdownStructure.self, forKey: .preserved)
+        // Absent in state written before the option existed.
+        fixesCapitalisation = try values.decodeIfPresent(
+            Bool.self,
+            forKey: .fixesCapitalisation
+        ) ?? Self.capitalisationDefault
         modelID = try values.decode(String.self, forKey: .modelID)
     }
 
@@ -389,6 +421,7 @@ public struct RewritePolicy: Sendable, Equatable, Codable {
         try values.encode(inactivityDelay, forKey: .inactivityDelay)
         try values.encode(sweep, forKey: .sweep)
         try values.encode(preserved, forKey: .preserved)
+        try values.encode(fixesCapitalisation, forKey: .fixesCapitalisation)
         try values.encode(modelID, forKey: .modelID)
     }
 
@@ -410,6 +443,7 @@ public enum PolicyField: String, Sendable, CaseIterable, Identifiable, Codable {
     case inactivityDelay
     case sweep
     case preserved
+    case fixesCapitalisation
     case model
 
     public var id: String { rawValue }
@@ -422,6 +456,7 @@ public enum PolicyField: String, Sendable, CaseIterable, Identifiable, Codable {
         case .inactivityDelay: "Inactivity delay"
         case .sweep: "Schedule"
         case .preserved: "Markdown preservation"
+        case .fixesCapitalisation: "Capitalisation"
         case .model: "Model"
         }
     }

@@ -66,13 +66,35 @@ public enum ProposalState: Sendable, Equatable, Codable {
 /// Why an Automatic vault was prevented from writing a plausible model result.
 /// Malformed results are failures instead; this is reserved for readable edits
 /// whose breadth makes human judgement safer than automatic application.
+/// Why a rewrite has to be looked at by a person, whatever the vault asked for.
+///
+/// These used to be the only alternative to a rewrite being *discarded*. A
+/// rewrite that failed a check produced nothing at all: no diff, no queue
+/// entry, nothing to accept or reject, and a note that stayed exactly as
+/// misspelled as it was. That is the most expensive answer available — the work
+/// was done, the model was right about most of it, and the user was told
+/// nothing except a sentence about a protected region.
+///
+/// Now a check that fails demotes rather than discards. Anything Chamfer is
+/// unsure of arrives in the review queue with its reason attached, and the only
+/// thing a failed check costs is the right to apply itself silently.
 public enum RewriteReviewRecommendation: String, Sendable, Equatable, Codable {
     case broaderThanExpectedForMode
+    /// One passage's answer was rejected and its original kept, so the rewrite
+    /// is real but incomplete.
+    case partOfTheNoteWasKeptAsItWas
+    /// The finished text failed the deterministic gate — a preserved structure
+    /// moved, or the length changed more than the mode can explain.
+    case structureChangedUnexpectedly
 
     public func explanation(for mode: RewriteMode) -> String {
         switch self {
         case .broaderThanExpectedForMode:
             "Chamfer moved this rewrite from Automatic to Review because its changes were broader than expected for \(mode.title)."
+        case .partOfTheNoteWasKeptAsItWas:
+            "Part of this note came back from the model in a state Chamfer would not use, so that part was left exactly as you wrote it. The rest of the rewrite is here to judge."
+        case .structureChangedUnexpectedly:
+            "This rewrite changed the note's structure in a way \(mode.title) does not explain. It is shown rather than applied so you can see what moved."
         }
     }
 }

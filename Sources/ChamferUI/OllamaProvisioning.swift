@@ -61,6 +61,23 @@ public final class OllamaProvisioning {
         await installer.shutDown()
     }
 
+    /// Waits until a runtime is available, starting one if nothing is already
+    /// on its way. Answers whether there is one.
+    ///
+    /// This is what lets the Models card offer a single button: asking for the
+    /// model implies asking for whatever has to exist underneath it. A call
+    /// made while the launch-time provisioning is still running joins it rather
+    /// than starting a second, and a call made after a failure gets a fresh
+    /// attempt — pressing the button again is the retry.
+    @discardableResult
+    public func ensureReady() async -> Bool {
+        if state == .ready { return true }
+        startIfNeeded()
+        // Captured before awaiting: the task clears itself on the way out.
+        if let running = task { await running.value }
+        return state == .ready
+    }
+
     /// Starts provisioning if it is not already running. Idempotent at this
     /// level as well as inside the installer, so calling it from more than one
     /// place is harmless.

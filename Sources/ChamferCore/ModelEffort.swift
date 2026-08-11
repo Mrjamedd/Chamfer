@@ -46,7 +46,7 @@ public enum ModelEffort: String, Sendable, Codable, CaseIterable, Identifiable, 
         case .balanced:
             "Larger slices with their neighbours for context, then a second pass that checks the rewrite against the original before it is kept."
         case .max:
-            "Whole sections at a time, deliberate reasoning, and two checking passes. The most accurate, and noticeably the slowest."
+            "Whole sections at a time, with their neighbours for context, and two passes that check the rewrite against the original. The most accurate, and noticeably the slowest."
         }
     }
 }
@@ -133,8 +133,16 @@ public struct ModelEffortProfile: Sendable, Equatable {
     public let includesNeighbourContext: Bool
 
     /// Whether the model may think before answering, where the backend
-    /// supports it. Off below max: on a small hybrid-reasoning model the
-    /// thinking is slower than the edit it is deciding on.
+    /// supports it.
+    ///
+    /// Off everywhere, and kept as a field rather than deleted because the
+    /// question is worth re-asking whenever the model ladder changes. Measured
+    /// on qwen3.5:4b, the model a 16 GB Mac runs: with thinking on, the runtime
+    /// bills the reasoning against the same token budget as the answer, so a
+    /// request sized for a sentence is spent entirely on deliberation and comes
+    /// back empty — Max scored 0 out of 12 on a corpus the other modes scored 11
+    /// and 12 on. Given a budget large enough to finish, the same passages took
+    /// between one and seventeen minutes each. Neither is a notes app.
     public let allowsDeliberation: Bool
 
     public init(
@@ -162,13 +170,30 @@ public struct ModelEffortProfile: Sendable, Equatable {
 
     public static func profile(for effort: ModelEffort) -> ModelEffortProfile {
         switch effort {
+        // The sizes below are chosen against the model's real context — a
+        // quarter of a million tokens on the current ladder — rather than
+        // against the four-thousand-token backend Chamfer used to have. An
+        // ordinary note now goes to the model whole, once, with its headings
+        // and its prose in the same request.
+        //
+        // What still bounds them is not context but *output*: this is a copying
+        // task, so the model must reproduce every character it is given, and a
+        // unit twice the size takes twice as long and risks twice as much on
+        // one answer. `responseTokenCeiling` is sized to the unit for that
+        // reason — roughly a third of the unit's characters, plus room — and a
+        // ceiling below its unit would truncate the answer mid-sentence.
+        //
+        // The segment target is a multiple of the unit target, never equal to
+        // it. Segments are where context comes from: a unit is given its
+        // neighbours only from inside its own segment, so a segment that holds
+        // exactly one unit silently turns `includesNeighbourContext` off.
         case .base:
             ModelEffortProfile(
                 effort: .base,
-                segmentTargetCharacters: 2_400,
-                unitTargetCharacters: 1_200,
+                segmentTargetCharacters: 8_000,
+                unitTargetCharacters: 4_000,
                 contextTokens: 8_192,
-                responseTokenCeiling: 1_024,
+                responseTokenCeiling: 2_048,
                 reviewPasses: 0,
                 includesNeighbourContext: false,
                 allowsDeliberation: false
@@ -176,10 +201,10 @@ public struct ModelEffortProfile: Sendable, Equatable {
         case .balanced:
             ModelEffortProfile(
                 effort: .balanced,
-                segmentTargetCharacters: 4_000,
-                unitTargetCharacters: 2_200,
+                segmentTargetCharacters: 24_000,
+                unitTargetCharacters: 8_000,
                 contextTokens: 16_384,
-                responseTokenCeiling: 2_048,
+                responseTokenCeiling: 3_584,
                 reviewPasses: 1,
                 includesNeighbourContext: true,
                 allowsDeliberation: false
@@ -187,13 +212,13 @@ public struct ModelEffortProfile: Sendable, Equatable {
         case .max:
             ModelEffortProfile(
                 effort: .max,
-                segmentTargetCharacters: 6_000,
-                unitTargetCharacters: 3_400,
+                segmentTargetCharacters: 48_000,
+                unitTargetCharacters: 16_000,
                 contextTokens: 32_768,
-                responseTokenCeiling: 4_096,
+                responseTokenCeiling: 6_656,
                 reviewPasses: 2,
                 includesNeighbourContext: true,
-                allowsDeliberation: true
+                allowsDeliberation: false
             )
         }
     }

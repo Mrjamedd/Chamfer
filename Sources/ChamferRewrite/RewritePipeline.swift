@@ -84,6 +84,7 @@ public enum RewritePipeline {
 
         var rewritten = ""
         var headings: [Int: String] = [:]
+        var keptOriginal = false
         let segments = MarkdownSectioner.sections(
             in: text,
             targetCharacterCount: profile.segmentTargetCharacters
@@ -101,7 +102,12 @@ public enum RewritePipeline {
             ) {
             case let .success(candidate):
                 rewritten += candidate
+            case let .keptOriginal(candidate):
+                rewritten += candidate
+                keptOriginal = true
             case let .refused(failure):
+                // A refusal now only ever means the model was never reached, so
+                // there is no answer to salvage and nothing to show anybody.
                 return .failed(failure)
             }
         }
@@ -111,7 +117,8 @@ public enum RewritePipeline {
             candidate: rewritten,
             modelID: model.modelID,
             effort: effort,
-            policy: policy
+            policy: policy,
+            keptOriginal: keptOriginal
         )
     }
 
@@ -119,6 +126,8 @@ public enum RewritePipeline {
 
     private enum Attempt {
         case success(String)
+        /// Usable text, but some of it is the original rather than a rewrite.
+        case keptOriginal(String)
         case refused(RewriteFailure)
     }
 
@@ -130,6 +139,10 @@ public enum RewritePipeline {
         profile: ModelEffortProfile,
         using model: NamedRewriter
     ) async -> Attempt {
+        // A unit whose answer is rejected contributes the text it was given.
+        // That is always safe — the original satisfies every check by
+        // construction — and it is what lets one bad passage cost a paragraph
+        // instead of the whole note.
         let envelope = SectionEnvelope(segment)
         guard !envelope.body.isEmpty else { return .success(segment) }
 
@@ -139,6 +152,7 @@ public enum RewritePipeline {
         )
 
         var rewritten = ""
+        var keptOriginal = false
         let protectedTokens = Set(masked.replacements.keys)
         let units = RewriteUnitPlanner.units(
             in: masked.masked,
@@ -166,6 +180,9 @@ public enum RewritePipeline {
                 ) {
                 case let .success(candidate):
                     cleaned = candidate
+                case let .keptOriginal(candidate):
+                    cleaned = candidate
+                    keptOriginal = true
                 case let .refused(failure):
                     return .refused(failure)
                 }
@@ -177,24 +194,17 @@ public enum RewritePipeline {
         // The placeholders are checked before anything is put back, so the
         // failure names the real problem rather than surfacing as a mangled
         // note further down.
-        let broken = masked.brokenTokens(in: rewritten)
-        guard broken.isEmpty else {
-            return .refused(
-                .localModelFailed(
-                    detail: "The model altered \(broken.count) protected \(broken.count == 1 ? "region" : "regions") — a link, code block or similar — so the rewrite was discarded."
-                )
-            )
+        // Reassembly is the one place that cannot be made partial: if the
+        // placeholders no longer line up, this segment's text goes back exactly
+        // as it arrived. The note keeps whatever the other segments achieved.
+        guard masked.brokenTokens(in: rewritten).isEmpty,
+              let restored = masked.unmask(rewritten) else {
+            return .keptOriginal(segment)
         }
 
-        guard let restored = masked.unmask(rewritten) else {
-            return .refused(
-                .localModelFailed(
-                    detail: "The rewrite could not be reassembled safely, so it was discarded."
-                )
-            )
-        }
-
-        return .success(envelope.leading + restored + envelope.trailing)
+        return keptOriginal
+            ? .keptOriginal(envelope.leading + restored + envelope.trailing)
+            : .success(envelope.leading + restored + envelope.trailing)
     }
 
     // MARK: - One unit, and its checking passes
@@ -224,7 +234,8 @@ public enum RewritePipeline {
                 instructions: RewriteInstructions.forMode(
                     policy.mode,
                     effort: profile.effort,
-                    protectedTokens: editableTokens
+                    protectedTokens: editableTokens,
+                    fixesCapitalisation: policy.fixesCapitalisation
                 )
             )
         } catch let error as ModelAccessError {
@@ -237,12 +248,17 @@ public enum RewritePipeline {
             )
         }
 
-        var candidate = sanitize(raw)
-        if let failure = RewriteResponseGuard.inspect(
+        // An answer the guard will not accept is not a reason to abandon the
+        // note. This passage keeps the text it already had — which passes every
+        // check by construction — and the rest of the note carries on. What the
+        // user loses is a fix in one paragraph; what they would have lost
+        // before is every fix in the note, with nothing shown to them at all.
+        var candidate = sanitize(raw, original: unit.text)
+        if RewriteResponseGuard.inspect(
             original: unit.text,
             candidate: candidate
-        ) {
-            return .refused(failure)
+        ) != nil {
+            return .keptOriginal(unit.text)
         }
 
         // The checking passes. A pass that fails its own guard is discarded and
@@ -290,11 +306,12 @@ public enum RewritePipeline {
             instructions: RewriteReviewInstructions.forMode(
                 policy.mode,
                 effort: profile.effort,
-                protectedTokens: editableTokens
+                protectedTokens: editableTokens,
+                fixesCapitalisation: policy.fixesCapitalisation
             )
         ) else { return nil }
 
-        let reviewed = sanitize(raw)
+        let reviewed = sanitize(raw, original: original)
         guard !reviewed.isEmpty else { return nil }
         // Measured against the original, not against the proposal: the check
         // exists to catch a proposal that drifted, so its own answer has to
@@ -303,6 +320,34 @@ public enum RewritePipeline {
             original: original,
             candidate: reviewed
         ) == nil else { return nil }
+        guard RewriteResponseGuard.isComposed(
+            reviewed,
+            of: [original, proposal]
+        ) else { return nil }
+        // The check may put a change back. That is the whole of what it may do:
+        // every position in its answer has to hold either the original's word
+        // or the proposal's. Anything else — a new correction, a different one,
+        // half of one — is a check writing rather than checking, and is not
+        // believed.
+        guard RewriteResponseGuard.onlyReverts(
+            reviewed,
+            from: proposal,
+            towards: original
+        ) else { return nil }
+        // A check may narrow a rewrite. It may not delete one.
+        //
+        // Handing the original back whole is the answer a small model reaches
+        // for when it is unsure, and it is the most expensive answer available:
+        // the note silently reports as unchanged and the corrections the user
+        // asked for are gone, with nothing shown and nothing to reject. Measured
+        // on the model this app ships — a clean `teh → the` reverted, and the
+        // whole pass scoring lower with checking on than off.
+        //
+        // Keeping an overstepped rewrite costs far less, because Chamfer never
+        // applies one silently: it goes to the review queue, where a person
+        // reads it and presses Reject. Between a bad edit somebody can refuse
+        // and a good edit nobody is offered, this app is built around the first.
+        guard reviewed != original else { return nil }
         return reviewed
     }
 
@@ -360,23 +405,48 @@ public enum RewritePipeline {
         }
     }
 
+    /// Turns the reassembled text into an outcome.
+    ///
+    /// The gate no longer discards. A rewrite that trips it is shown rather
+    /// than thrown away, carrying the reason it is being shown — the user gets
+    /// a diff they can read and refuse instead of a sentence about a note they
+    /// cannot see. The one thing a tripped gate still costs is the right to
+    /// apply itself: `RewriteApplicationDecision` sends anything with a
+    /// recommendation to the queue however the vault is configured.
     private static func finish(
         original: String,
         candidate: String,
         modelID: String,
         effort: ModelEffort,
-        policy: RewritePolicy
+        policy: RewritePolicy,
+        keptOriginal: Bool = false
     ) -> RewriteOutcome {
-        if let failure = RewriteGate.inspect(
+        let gateFailure = RewriteGate.inspect(
             original: original,
             candidate: candidate,
             preserved: effectivePreservation(for: policy)
-        ) {
-            return .failed(failure)
+        )
+        // An empty answer is the exception: there is no diff in it to judge.
+        if let gateFailure, candidate.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty {
+            return .failed(gateFailure)
         }
 
         let hunks = TextDiff.hunks(from: original, to: candidate)
         guard !hunks.isEmpty else { return .unchanged }
+
+        let recommendation: RewriteReviewRecommendation? = if gateFailure != nil {
+            .structureChangedUnexpectedly
+        } else if keptOriginal {
+            .partOfTheNoteWasKeptAsItWas
+        } else {
+            RewriteSafety.reviewRecommendation(
+                original: original,
+                candidate: candidate,
+                mode: policy.mode
+            )
+        }
 
         return .proposed(
             RewriteProduct(
@@ -384,11 +454,7 @@ public enum RewritePipeline {
                 text: candidate,
                 modelID: modelID,
                 effort: effort,
-                reviewRecommendation: RewriteSafety.reviewRecommendation(
-                    original: original,
-                    candidate: candidate,
-                    mode: policy.mode
-                )
+                reviewRecommendation: recommendation
             )
         )
     }
@@ -398,8 +464,33 @@ public enum RewritePipeline {
     /// Everything a raw answer has to survive before it is compared with its
     /// original: a wrapping code fence, and any fence marker echoed back on a
     /// line of its own.
-    static func sanitize(_ raw: String) -> String {
-        RewriteResponseGuard.removingBoundaryMarkers(from: stripFencing(from: raw))
+    static func sanitize(_ raw: String, original: String = "") -> String {
+        RewriteResponseGuard.removingBoundaryMarkers(
+            from: strippingOrphanFence(from: stripFencing(from: raw), original: original)
+        )
+    }
+
+    /// Removes a lone closing fence the model added to a passage that never had
+    /// one.
+    ///
+    /// `stripFencing` only handles a response wrapped in a fence top and
+    /// bottom. This is the other half: an answer that ends in ``` with nothing
+    /// opening it. Real code blocks are masked into placeholders before the
+    /// model sees anything, so a fence in an answer whose passage contained
+    /// none is always the model's own punctuation — and appending it to the
+    /// note turns the rest of the file into a code block.
+    private static func strippingOrphanFence(
+        from text: String,
+        original: String
+    ) -> String {
+        guard !original.contains("```"), text.contains("```") else { return text }
+        var lines = text.components(separatedBy: "\n")
+        while let last = lines.last,
+              last.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+            lines.removeLast()
+        }
+        return lines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Removes the code fence models wrap whole documents in.

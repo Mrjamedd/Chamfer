@@ -1,4 +1,3 @@
-import AppKit
 import ChamferCore
 import ChamferRewrite
 import SwiftUI
@@ -210,7 +209,13 @@ struct ModelsPage: View {
                     state: state,
                     isHovered: hoveredBackend == .local,
                     isRecessed: recession.isRecessed,
-                    errorMessage: runtime.errorMessage,
+                    // A runtime Chamfer could not install is the local path's
+                    // failure as much as a model that would not download, and
+                    // the card has one line to say either in. The runtime comes
+                    // first: a provisioning failure means the pull never ran, so
+                    // anything the model installer has to say about it is older
+                    // news.
+                    errorMessage: provisioning.state.failure ?? runtime.errorMessage,
                     onPrimaryAction: performLocalAction,
                     onHoverChange: { hovering in
                         setHover(.local, hovering: hovering)
@@ -342,11 +347,8 @@ struct ModelsPage: View {
     private func performLocalAction() {
         switch ModelsLocalPresentation.action(for: state) {
         case .preparingRuntime:
-            // Chamfer is already fetching it. Nothing for a press to do.
+            // Chamfer is already setting itself up. Nothing for a press to do.
             break
-        case .installRuntime:
-            guard let url = URL(string: "https://ollama.com/download") else { return }
-            NSWorkspace.shared.open(url)
         case .download:
             downloadModel()
         case .activate:
@@ -356,10 +358,17 @@ struct ModelsPage: View {
         }
     }
 
-    /// Downloading is idempotent all the way down: the installer checks the
-    /// disk before it fetches anything and joins an existing pull rather than
-    /// starting a second one, so pressing this twice — or reopening the page
-    /// mid-download — costs nothing.
+    /// Gets the model, and whatever it needs underneath it.
+    ///
+    /// The button asks for one thing, so this does both: the runtime is
+    /// arranged first — joining the provisioning that starts at launch rather
+    /// than beginning a second — and the pull follows. Nobody is sent to a
+    /// website for a dependency the app is perfectly able to install itself.
+    ///
+    /// Idempotent all the way down: the installer checks the disk before it
+    /// fetches anything and joins an existing pull rather than starting a
+    /// second one, so pressing this twice — or reopening the page mid-download
+    /// — costs nothing.
     private func downloadModel() {
         let model = state.recommendedModel
         let device = state.device
@@ -370,6 +379,15 @@ struct ModelsPage: View {
         }
 
         Task {
+            guard await provisioning.ensureReady() else {
+                // The failure is read off the provisioning state by the card,
+                // so there is nothing to carry back here.
+                withAnimation(Chamfer.Motion.navigation) {
+                    state.finishDownload(installed: false)
+                }
+                return
+            }
+
             let outcome = await runtime.install(model, device: device) { progress in
                 withAnimation(
                     Chamfer.Motion.reduce(
@@ -696,10 +714,10 @@ private struct ModelsPrimaryCard: View {
                     fill: Chamfer.Palette.brassSoft.opacity(0.85),
                     showsSpinner: true
                 )
-            case .installRuntime, .download, .activate:
+            case .download, .activate:
                 Button(action: onPrimaryAction) {
                     HStack(spacing: 6) {
-                        Text(action.title)
+                        Text(action.title(model: model))
                         Image(systemName: action.symbol)
                             .font(.system(size: 10, weight: .semibold))
                     }
@@ -707,7 +725,7 @@ private struct ModelsPrimaryCard: View {
                 .buttonStyle(ModelsPrimaryButtonStyle())
                 .disabled(!ModelsLocalPresentation.isActionEnabled(for: state))
                 .accessibilityLabel(
-                    "\(action.title), \(model.displayName) \(model.parameterLabel)"
+                    "\(action.title(model: model)), \(model.displayName) \(model.parameterLabel)"
                 )
             }
             Spacer(minLength: 0)
@@ -1024,12 +1042,25 @@ private struct ModelsCloudRow: View {
         .padding(.vertical, 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(ModelsCardSurface(backend: .cloud, presentation: presentation))
+        // Covered rather than removed. The page's whole argument is that the
+        // local model is the product and cloud is the quieter alternative
+        // beneath it; deleting the row would leave that argument with one side,
+        // and shipping it live would offer something this build cannot do.
+        .overlay {
+            if !ModelsCloudAvailability.isAvailable {
+                ModelsComingSoonScrim()
+            }
+        }
+        .allowsHitTesting(ModelsCloudAvailability.isAvailable)
         .offset(y: presentation.lift)
         .animation(
             Chamfer.Motion.reduce(.spring(duration: 0.24, bounce: 0), when: reduceMotion),
             value: isHovered
         )
-        .onHover(perform: onHoverChange)
+        .onHover { hovering in
+            guard ModelsCloudAvailability.isAvailable else { return }
+            onHoverChange(hovering)
+        }
     }
 
     private var detail: String {
@@ -1037,6 +1068,44 @@ private struct ModelsCloudRow: View {
             return "\(provider.displayName) connected. Notes leave this Mac when it runs."
         }
         return "A larger model than this Mac can hold, billed by your provider."
+    }
+}
+
+/// The cover over an unreleased path.
+///
+/// Deliberately close in colour to the page it sits on rather than a dark
+/// scrim: this is not a modal blocking something, it is a card that has not
+/// opened yet. The row beneath stays legible enough to read what is coming,
+/// which is the only reason to leave it on the page at all.
+private struct ModelsComingSoonScrim: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .fill(Chamfer.Palette.canvas.opacity(0.86))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(
+                        Chamfer.Palette.pageTextSoft.opacity(0.20),
+                        style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                    )
+            }
+            .overlay {
+                VStack(spacing: 4) {
+                    Text(ModelsCloudAvailability.comingSoonTitle)
+                        .font(.system(size: 9, weight: .bold))
+                        .kerning(1.4)
+                        .foregroundStyle(Chamfer.Palette.pageText.opacity(0.72))
+                    Text(ModelsCloudAvailability.comingSoonDetail)
+                        .font(.system(size: 11, design: .serif))
+                        .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 24)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(
+                "Cloud model, coming soon. \(ModelsCloudAvailability.comingSoonDetail)"
+            )
     }
 }
 

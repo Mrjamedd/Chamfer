@@ -120,6 +120,35 @@ private struct EchoRewriter: Rewriter {
     #expect(try OllamaAPI.chatText(from: response) == "Local result")
 }
 
+/// A thinking model that ran out of budget mid-thought answers with an empty
+/// `content` and a full `thinking`. Saying so is the difference between a
+/// person looking at their model and a person looking at a number.
+@Test func aModelThatSpentItsBudgetThinkingSaysThatRatherThanNothing() {
+    let thoughtful = Data(
+        #"{"message":{"role":"assistant","content":"","thinking":"First I should"},"done_reason":"length"}"#.utf8
+    )
+    #expect(throws: ModelAccessError.self) {
+        try OllamaAPI.chatText(from: thoughtful)
+    }
+    do {
+        _ = try OllamaAPI.chatText(from: thoughtful)
+    } catch let error as ModelAccessError {
+        #expect("\(error.errorDescription ?? "")".contains("thinking"))
+    } catch {
+        Issue.record("Expected a ModelAccessError, got \(error)")
+    }
+
+    let silent = Data(#"{"message":{"role":"assistant","content":"  "}}"#.utf8)
+    do {
+        _ = try OllamaAPI.chatText(from: silent)
+        Issue.record("Expected an empty-response failure")
+    } catch let error as ModelAccessError {
+        #expect(!"\(error.errorDescription ?? "")".contains("thinking"))
+    } catch {
+        Issue.record("Expected a ModelAccessError, got \(error)")
+    }
+}
+
 @Test func providerValidationUsesReadOnlyCatalogEndpoints() throws {
     let openAI = try CloudAPIRequestFactory.validationRequest(
         provider: .openAI,

@@ -247,6 +247,21 @@ struct PolicyEditor: View {
                         change { $0.mode = mode }
                     }
                 }
+
+                SettingRow(
+                    title: PolicyField.fixesCapitalisation.title,
+                    detail: PolicyEditorChoices.capitalisationDetail(
+                        for: policy.fixesCapitalisation
+                    )
+                ) {
+                    ChamferToggle(
+                        isOn: policy.fixesCapitalisation
+                            ?? RewritePolicy.capitalisationDefault,
+                        label: PolicyField.fixesCapitalisation.title
+                    ) { isOn in
+                        change { $0.fixesCapitalisation = isOn }
+                    }
+                }
             }
 
             ConfigurationGroup(
@@ -365,6 +380,14 @@ enum PolicyEditorChoices {
         (1_800, "30 minutes"),
         (3_600, "1 hour")
     ]
+
+    /// Says what the switch does in terms of the note, not the setting. Both
+    /// answers are legitimate, so neither is written as the sensible one.
+    static func capitalisationDetail(for choice: Bool?) -> String {
+        choice ?? RewritePolicy.capitalisationDefault
+            ? "A sentence starting lower case, an uncapitalised name or day, a lone “i”: all treated as spelling and fixed."
+            : "Letter case is left exactly as typed. A misspelled word is still corrected, but “friday” stays “friday”."
+    }
 }
 
 // MARK: - Preservation

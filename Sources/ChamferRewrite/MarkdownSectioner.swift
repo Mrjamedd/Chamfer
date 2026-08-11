@@ -4,6 +4,15 @@ import Foundation
 /// Boundaries occur only before headings or after blank lines, and never
 /// inside front matter or fenced code. Joining the result always recreates the
 /// input exactly.
+///
+/// A heading is a *permitted* boundary, not a compulsory one. It used to be
+/// compulsory, which quietly made `targetCharacterCount` meaningless: a 736
+/// character note with four headings became five requests of 9, 66, 121, 223
+/// and 243 characters, whatever budget the effort mode set, and no request
+/// could see any of the others. The model was being asked to spell-check a
+/// heading with the document it belongs to withheld. The size target is now the
+/// thing that decides, and the heading only says *where* to cut once the target
+/// says it is time.
 enum MarkdownSectioner {
     static func sections(
         in text: String,
@@ -37,7 +46,11 @@ enum MarkdownSectioner {
 
             let isHeading = !inFrontMatter && inFence == nil
                 && trimmed.range(of: "^#{1,6}[ \\t]+", options: .regularExpression) != nil
-            if isHeading, !current.isEmpty {
+            // `>= target` rather than `!current.isEmpty`. The unit planner asks
+            // for a target of 1 when it wants every block separately, so that
+            // caller is unchanged; every other caller now gets the size it
+            // asked for.
+            if isHeading, current.count >= max(1, targetCharacterCount) {
                 sections.append(current)
                 current = ""
             }

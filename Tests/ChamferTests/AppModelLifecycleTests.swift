@@ -1,4 +1,5 @@
 import ChamferCore
+import ChamferUI
 import ChamferWatch
 import Foundation
 import Testing
@@ -42,6 +43,59 @@ private func appDashboard(vault: Vault, noteURL: URL) -> DashboardState {
 private func appTemporaryDirectory() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
+}
+
+// MARK: - Opening a note from somewhere else
+
+/// "Open note" is a request to *be taken* to the note, and has to say so.
+///
+/// Setting `openNote` alone cannot: the window only moves to the Notes page
+/// when that value changes, and pressing Open note on the note you were just
+/// reading assigns the value it already had. That is precisely when the button
+/// gets pressed — you edited a note, Chamfer proposed a rewrite, you want to go
+/// back and look — and precisely when nothing happened.
+@Test @MainActor
+func openingANoteThatIsAlreadyOpenStillAsksToBeTakenToIt() {
+    let noteURL = URL(filePath: "/Vault/Kickoff.md")
+    let vault = Vault(url: URL(filePath: "/Vault"), noteCount: 1)
+    let model = AppModel(dashboard: appDashboard(vault: vault, noteURL: noteURL))
+    #expect(model.dashboard.openNote?.url == noteURL)
+
+    model.showNote(at: noteURL)
+
+    #expect(model.dashboard.openNote?.url == noteURL)
+    #expect(model.requestedDestination == DashboardView.Tab.notes)
+}
+
+/// The note is matched the way every other comparison in the app matches one.
+/// Raw URL equality makes the same file on a path written differently a
+/// different note, and the button silently does nothing.
+@Test @MainActor
+func openingANoteFindsItHoweverItsPathIsWritten() {
+    let noteURL = URL(filePath: "/Vault/Kickoff.md")
+    let vault = Vault(url: URL(filePath: "/Vault"), noteCount: 1)
+    let model = AppModel(dashboard: appDashboard(vault: vault, noteURL: noteURL))
+    model.dashboard.openNote = nil
+
+    model.showNote(at: URL(filePath: "/Vault/Archive/../Kickoff.md"))
+
+    #expect(model.dashboard.openNote?.url == noteURL)
+    #expect(model.requestedDestination == DashboardView.Tab.notes)
+}
+
+/// A note that is no longer indexed leaves the window where it is. Being moved
+/// to a page that cannot show the thing asked for is worse than not moving.
+@Test @MainActor
+func openingANoteThatIsNoLongerThereGoesNowhere() {
+    let vault = Vault(url: URL(filePath: "/Vault"), noteCount: 1)
+    let model = AppModel(
+        dashboard: appDashboard(vault: vault, noteURL: URL(filePath: "/Vault/Kickoff.md"))
+    )
+
+    model.showNote(at: URL(filePath: "/Vault/Deleted.md"))
+
+    #expect(model.requestedDestination == nil)
+    #expect(model.dashboard.openNote?.url == URL(filePath: "/Vault/Kickoff.md"))
 }
 
 @Test @MainActor

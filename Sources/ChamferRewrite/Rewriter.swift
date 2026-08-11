@@ -50,6 +50,11 @@ public struct RewriteRequest: Sendable, Equatable {
     /// The headroom above the input is generous — a formatting pass legitimately
     /// returns more characters than it was given — but the mode's own ceiling
     /// still caps it, which is one of the ways Base stays quick.
+    ///
+    /// Sized for an answer and nothing else. A thinking model would spend this
+    /// budget before writing a character — its reasoning is billed to the same
+    /// allowance — which is one of the reasons no mode asks one to think. See
+    /// `ModelEffortProfile.allowsDeliberation`.
     public var maximumResponseTokens: Int {
         let scaled = Int(ceil(Double(text.utf8.count) / 3.0)) + 96
         return max(96, min(effort.profile.responseTokenCeiling, scaled))
@@ -58,15 +63,25 @@ public struct RewriteRequest: Sendable, Equatable {
     /// The note is quoted inside an unguessable fence rather than sent as a
     /// naked command, and the requested output is named again immediately after
     /// the text, where a model is least likely to have lost it.
+    /// Deliberately no `Document:` or `Section:` preamble.
+    ///
+    /// Those two lines used to open every request, and they cost more than they
+    /// bought. A note whose first heading is its own title produced the same
+    /// string three times inside sixty characters — `Document: Project Atlas`,
+    /// `Section: Project Atlas`, then the heading itself — and the model
+    /// resolved the repetition the way a person would: it dropped one. Once as
+    /// the heading, taking a protected marker with it and discarding the whole
+    /// note's rewrite; and once the other way, copying `Document: Project
+    /// Atlas` into the note as a new line of prose.
+    ///
+    /// Neither was a comprehension failure. The request contained redundant
+    /// metadata, and a small model given metadata beside content will
+    /// eventually treat one as the other. The passage now arrives with nothing
+    /// but its fence — and since a unit is usually the whole note, the title is
+    /// already in the text where it belongs.
     public var prompt: String {
         if let composedPrompt { return composedPrompt }
         var lines: [String] = []
-        if let documentTitle, !documentTitle.isEmpty {
-            lines.append("Document: \(documentTitle)")
-        }
-        if let headingPath, !headingPath.isEmpty {
-            lines.append("Section: \(headingPath)")
-        }
 
         let hasContext = !(contextBefore ?? "").isEmpty
             || !(contextAfter ?? "").isEmpty
@@ -87,10 +102,10 @@ public struct RewriteRequest: Sendable, Equatable {
         lines.append(text)
         lines.append(RewriteBoundary.editableClose(boundary))
         lines.append(
-            "Return the edited replacement for the text between "
+            "Write the edited replacement for the text between "
                 + "\(RewriteBoundary.editableOpen(boundary)) and "
                 + "\(RewriteBoundary.editableClose(boundary)), and nothing else. "
-                + "Do not repeat the markers."
+                + "Do not write those two fence lines."
         )
         return lines.joined(separator: "\n")
     }

@@ -167,6 +167,17 @@ private func state(
     #expect(!dashboard.localReady)
 }
 
+/// The cover over cloud is not paint. Nothing reaches the configuration behind
+/// it — not the row's button, not a restored `cloudConfigurationOpen`, not a
+/// caller that has not heard cloud is unreleased.
+@Test func cloudConfigurationCannotBeOpenedWhileCloudIsUnreleased() {
+    var dashboard = state()
+
+    dashboard.openCloudConfiguration()
+
+    #expect(dashboard.cloudConfigurationOpen == ModelsCloudAvailability.isAvailable)
+}
+
 @Test func cloudActivationClosesItsOwnConfiguration() {
     var dashboard = state()
     dashboard.openCloudConfiguration()
@@ -219,13 +230,33 @@ private func state(
     #expect(ModelsLocalPresentation.isActionEnabled(for: dashboard))
 }
 
-@Test func ollamaMissingIsSaidPlainlyRatherThanAsNotInstalled() {
+/// The card never asks anybody to go and get Ollama. A Mac with no runtime and
+/// none on its way — a first run, or one whose provisioning failed — is offered
+/// the model, and pressing it arranges the runtime on the way.
+@Test func aMissingRuntimeStillOffersTheModelRatherThanAnErrand() {
     let dashboard = state(runtimeAvailable: false)
 
-    #expect(dashboard.status(for: .local) == "OLLAMA REQUIRED")
-    #expect(ModelsLocalPresentation.action(for: dashboard) == .installRuntime)
+    #expect(dashboard.status(for: .local) == "NOT INSTALLED")
+    #expect(ModelsLocalPresentation.action(for: dashboard) == .download)
+    #expect(ModelsLocalPresentation.isActionEnabled(for: dashboard))
     #expect(
-        ModelsLocalPresentation.statusDetail(for: dashboard).contains("Ollama")
+        !ModelsLocalPresentation.statusDetail(for: dashboard).contains("Ollama")
+    )
+}
+
+/// The button names what arrives. "Download Model" beside a card titled
+/// Qwen3.5 is a control describing its own type rather than its own effect.
+@Test func theDownloadButtonNamesTheModelItFetches() {
+    let dashboard = state(memoryGB: 24)
+    let action = ModelsLocalPresentation.action(for: dashboard)
+
+    #expect(action == .download)
+    #expect(
+        action.title(model: dashboard.recommendedModel) == "Download Qwen3.5"
+    )
+    #expect(
+        ModelsLocalAction.download.title(model: state(memoryGB: 64).recommendedModel)
+            == "Download GPT-OSS"
     )
 }
 
