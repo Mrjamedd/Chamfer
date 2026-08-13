@@ -15,9 +15,11 @@ public struct DiffHunkView: View {
     @Environment(\.chamferSurface) private var surface
 
     private let hunk: Hunk
+    private let isSelected: Bool
 
-    public init(_ hunk: Hunk) {
+    public init(_ hunk: Hunk, isSelected: Bool = true) {
         self.hunk = hunk
+        self.isSelected = isSelected
     }
 
     private var segments: (before: [DiffSegment], after: [DiffSegment]) {
@@ -34,22 +36,28 @@ public struct DiffHunkView: View {
                 line(
                     marker: "−",
                     segments: segments.before,
-                    tint: surface.danger,
-                    background: surface.removedFill,
-                    emphasis: surface.removedEmphasis
+                    tint: isSelected ? surface.danger : surface.textFaint,
+                    background: isSelected ? surface.removedFill : surface.sunken,
+                    emphasis: isSelected ? surface.removedEmphasis : surface.stroke,
+                    text: isSelected ? surface.textPrimary : surface.textSecondary
                 )
             }
             if !hunk.after.isEmpty {
                 line(
                     marker: "+",
                     segments: segments.after,
-                    tint: surface.positive,
-                    background: surface.addedFill,
-                    emphasis: surface.addedEmphasis
+                    tint: isSelected ? surface.positive : surface.textFaint,
+                    background: isSelected ? surface.addedFill : surface.sunken,
+                    emphasis: isSelected ? surface.addedEmphasis : surface.stroke,
+                    text: isSelected ? surface.textPrimary : surface.textSecondary
                 )
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
+                .strokeBorder(surface.stroke, lineWidth: 1)
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
     }
@@ -59,7 +67,8 @@ public struct DiffHunkView: View {
         segments: [DiffSegment],
         tint: Color,
         background: Color,
-        emphasis: Color
+        emphasis: Color,
+        text: Color
     ) -> some View {
         HStack(alignment: .top, spacing: Chamfer.Space.snug) {
             Text(marker)
@@ -68,12 +77,12 @@ public struct DiffHunkView: View {
                 .frame(width: 10, alignment: .center)
             marked(segments, emphasis: emphasis)
                 .font(Chamfer.TypeScale.mono)
-                .foregroundStyle(surface.textPrimary)
+                .foregroundStyle(text)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, Chamfer.Space.snug)
-        .padding(.horizontal, Chamfer.Space.regular)
+        .padding(.vertical, Chamfer.Space.regular)
+        .padding(.horizontal, Chamfer.Space.roomy)
         .background(background)
     }
 
@@ -127,17 +136,25 @@ public struct ProposalCard: View {
     }
 
     public var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
-                Header(proposal: proposal, subtitle: subtitle)
-                if let first = proposal.hunks.first {
-                    DiffHunkView(first)
-                }
-                if proposal.hunks.count > 1 {
-                    Overflow(count: proposal.hunks.count - 1)
-                }
-                Actions(onAccept: onAccept, onReject: onReject, onOpen: onOpen)
+        VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
+            Header(proposal: proposal, subtitle: subtitle)
+            if let first = proposal.hunks.first {
+                DiffHunkView(first)
             }
+            if proposal.hunks.count > 1 {
+                Overflow(count: proposal.hunks.count - 1)
+            }
+            Actions(onAccept: onAccept, onReject: onReject, onOpen: onOpen)
+        }
+        .padding(Chamfer.Space.roomy)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Chamfer.Palette.paper)
+        .clipShape(
+            RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous)
+                .strokeBorder(Chamfer.Palette.paperStroke, lineWidth: 1)
         }
     }
 

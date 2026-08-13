@@ -3,12 +3,13 @@ import ChamferCore
 import ChamferRewrite
 import ChamferUI
 import SwiftUI
+import UserNotifications
 
 /// The app shell.
 ///
-/// Three surfaces, and deliberately only three: the window with the notes in
-/// it, the settings window that keeps app-wide controls out of that window,
-/// and the menu bar panel that keeps working when both are closed.
+/// Four surfaces, each with one job: the window with the notes in it, settings
+/// for app-wide controls, the menu bar panel that works while both are closed,
+/// and a modest About window that speaks in Chamfer's own voice.
 @main
 struct ChamferApp: App {
     @NSApplicationDelegateAdaptor(ChamferAppDelegate.self) private var delegate
@@ -37,10 +38,13 @@ struct ChamferApp: App {
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
+            CommandGroup(replacing: .appInfo) {
+                AboutChamferCommand()
+            }
             // Somebody who skipped the welcome, or met it before they had a
             // folder connected, needs a way back to it that is not deleting
             // their preferences.
-            CommandGroup(replacing: .help) {
+            CommandGroup(after: .help) {
                 Button("Welcome to Chamfer") {
                     NotificationCenter.default.post(
                         name: .chamferShowWelcome,
@@ -67,6 +71,12 @@ struct ChamferApp: App {
         // from it and changes size when the section does. Without this the
         // window kept whatever height it opened at, which is how the short
         // tabs ended in a field of empty paper.
+        .windowResizability(.contentSize)
+
+        Window("About Chamfer", id: AboutWindow.id) {
+            AboutChamferView()
+                .preferredColorScheme(.light)
+        }
         .windowResizability(.contentSize)
     }
 }
@@ -108,7 +118,7 @@ private struct RootWindow: View {
                 model.preferences.hasSeenWelcome = true
                 model.flush()
             },
-            onConnectVault: connectVault,
+            onConnectVault: { _ = connectVault() },
             review: reviewActions,
             vaults: vaultActions
         )
@@ -126,11 +136,13 @@ private struct RootWindow: View {
         }
     }
 
-    private func connectVault() {
-        if VaultConnector.present(into: model) {
+    private func connectVault() -> VaultConnectionResult {
+        let result = VaultConnector.present(into: model)
+        if result.didChange {
             model.flush()
             notes.vaultsChanged()
         }
+        return result
     }
 
     private var vaultActions: VaultActions {
@@ -150,12 +162,16 @@ private struct RootWindow: View {
                 model.flush()
                 notes.vaultsChanged()
             },
-            connectVault: connectVault,
+            connectVault: { connectVault().notice },
             reconnectVault: { vaultID in
                 guard let oldRoot = model.dashboard.vaults.first(where: {
                     $0.id == vaultID
-                })?.url else { return }
-                if VaultConnector.present(reconnecting: vaultID, into: model),
+                })?.url else { return nil }
+                let result = VaultConnector.present(
+                    reconnecting: vaultID,
+                    into: model
+                )
+                if result.didChange,
                    let newRoot = model.dashboard.vaults.first(where: {
                        $0.id == vaultID
                    })?.url {
@@ -163,6 +179,7 @@ private struct RootWindow: View {
                     model.flush()
                     notes.vaultsChanged()
                 }
+                return result.notice
             },
             chooseExcludedNotes: { vault in
                 VaultExclusionPicker.present(within: vault)
@@ -188,6 +205,13 @@ private struct RootWindow: View {
                 )
             },
             reject: { rewrites.reject($0) },
+            setHunkSelected: { proposal, hunkID, selected in
+                rewrites.setHunkSelected(
+                    proposal,
+                    hunkID: hunkID,
+                    selected: selected
+                )
+            },
             regenerate: { rewrites.regenerate($0) },
             openNote: { summary in
                 model.showNote(at: summary.url)
@@ -228,7 +252,9 @@ private struct SettingsWindow: View {
 }
 
 @MainActor
-final class ChamferAppDelegate: NSObject, NSApplicationDelegate {
+final class ChamferAppDelegate: NSObject, NSApplicationDelegate,
+    @preconcurrency UNUserNotificationCenterDelegate
+{
     /// Retained: a `DispatchSourceSignal` stops firing the moment it is
     /// released.
     private var signalSources: [DispatchSourceSignal] = []
@@ -254,6 +280,7 @@ final class ChamferAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installSignalHandlers()
+        notifications.configureResponses(delegate: self)
 
         // A SwiftPM executable has no bundle, so it launches as an accessory
         // process behind everything else without this.
@@ -284,6 +311,10 @@ final class ChamferAppDelegate: NSObject, NSApplicationDelegate {
                 openMainWindow: { [weak self] in self?.showMainWindow() },
                 openReview: { [weak self] in
                     self?.model.requestedDestination = DashboardView.Tab.review
+                    self?.showMainWindow()
+                },
+                openNote: { [weak self] note in
+                    self?.model.showNote(at: note.url)
                     self?.showMainWindow()
                 },
                 openSettings: { [weak self] in self?.showSettings() },
@@ -382,6 +413,42 @@ final class ChamferAppDelegate: NSObject, NSApplicationDelegate {
                 vaultName: vault.name,
                 preferences: model.preferences
             )
+        }
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let content = response.notification.request.content
+        let route = NotificationRouter.route(
+            actionIdentifier: response.actionIdentifier,
+            categoryIdentifier: content.categoryIdentifier,
+            userInfo: content.userInfo
+        )
+        if let route { perform(route) }
+        completionHandler()
+    }
+
+    /// Notification navigation joins the same one-shot request path used by
+    /// the menu bar. The dashboard remains the only owner of tab changes.
+    private func perform(_ route: NotificationRoute) {
+        switch route {
+        case .review:
+            model.requestedDestination = DashboardView.Tab.review
+            showMainWindow()
+        case let .undo(historyEntryID):
+            guard let entry = model.dashboard.history.first(where: {
+                $0.id == historyEntryID
+            }) else { return }
+            rewrites.restore(entry)
+        case .models:
+            model.requestedDestination = DashboardView.Tab.models
+            showMainWindow()
+        case .vaults:
+            model.requestedDestination = DashboardView.Tab.vaults
+            showMainWindow()
         }
     }
 

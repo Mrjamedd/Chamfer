@@ -128,7 +128,7 @@ enum DashboardBottomBarItems {
                     .init(
                         id: proposal.id.uuidString,
                         title: proposal.note.title,
-                        detail: "\(proposal.hunks.count) change\(proposal.hunks.count == 1 ? "" : "s")"
+                        detail: "\(proposal.changeCount) change\(proposal.changeCount == 1 ? "" : "s")"
                     )
                 },
                 // The one destination that accumulates. A full queue and an
@@ -189,6 +189,7 @@ public struct DashboardView: View {
     @LegacyState private var closeHovered = false
     @LegacyState private var showingHome = false
     @LegacyState private var displayedNote: NoteDocument?
+    @LegacyState private var displayedNoteMetadata: NotePageMetadata?
     @LegacyState private var isSearching = false
     @LegacyState private var modelsState: ModelsDashboardState
     /// Bound rather than copied. While this was `@LegacyState` the page was working
@@ -198,8 +199,9 @@ public struct DashboardView: View {
     /// The model owns the state; this view renders and edits it in place.
     @Binding private var state: DashboardState
     @Binding private var navigationRequest: String?
-    @LegacyState private var editorModel: NoteEditorModel?
+    @LegacyState private var editorSessions: DashboardNoteEditorSessions
     @LegacyState private var showingChangeHistory = false
+    @FocusState private var historyTriggerFocused: Bool
 
     private let editing: NoteEditingConfiguration?
     private let noteLoadError: String?
@@ -266,15 +268,32 @@ public struct DashboardView: View {
         _modelsState = State(
             initialValue: modelsState ?? ModelsPreferences.loadState()
         )
-        _displayedNote = State(initialValue: state.wrappedValue.openNote)
-        _editorModel = State(
-            initialValue: state.wrappedValue.openNote.flatMap { document in
-                guard let editing, editing.canEdit(document.url) else {
-                    return nil
-                }
-                return Self.makeEditor(for: document, editing: editing)
+        let initialState = state.wrappedValue
+        let initialNote = initialState.openNote
+        let sessions = DashboardNoteEditorSessions()
+        if let document = initialNote,
+           let editing,
+           editing.canEdit(document.url) {
+            sessions.retain(
+                Self.makeEditor(
+                    for: document,
+                    editing: editing,
+                    didSave: { savedDocument in
+                        var current = state.wrappedValue
+                        DashboardNoteDocuments.retain(savedDocument, in: &current)
+                        state.wrappedValue = current
+                    }
+                ),
+                for: document.url
+            )
+        }
+        _displayedNote = State(initialValue: initialNote)
+        _displayedNoteMetadata = State(
+            initialValue: initialNote.map {
+                NotePageMetadata.snapshot(for: $0, in: initialState)
             }
         )
+        _editorSessions = State(initialValue: sessions)
     }
 
     public enum Tab {
@@ -350,12 +369,14 @@ public struct DashboardView: View {
                     .padding(.bottom, Chamfer.Space.section + 2)
                     .zIndex(2)
             }
+            .disabled(showingChangeHistory)
             .padding(.horizontal, Chamfer.Space.section)
 
             // The close control lives in the gutter above the page and is
             // revealed by moving towards it, so nothing sits over the note
             // while you are reading.
             closeZone
+                .disabled(showingChangeHistory)
 
             changeHistoryOverlay
         }
@@ -381,10 +402,6 @@ public struct DashboardView: View {
         .background {
             TrackpadPanGesture(onEnded: handleTabGesture)
         }
-        .animation(
-            Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
-            value: showingChangeHistory
-        )
         .onChange(of: state.openNote) { _, note in
             synchronizeOpenNote(note)
         }
@@ -425,9 +442,14 @@ public struct DashboardView: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Chamfer.Palette.page)
-                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                .chamferRing(radius: 24)
-                .chamferFloat()
+                .clipShape(
+                    RoundedRectangle(cornerRadius: Chamfer.Radius.card, style: .continuous)
+                )
+                .chamferRing(
+                    radius: Chamfer.Radius.card,
+                    color: Chamfer.Palette.structuralRing
+                )
+                .chamferFloat(opacity: Chamfer.Page.sheetShadowOpacity)
                 .scaleEffect(closeHovered ? 0.975 : 1)
                 .animation(Chamfer.Motion.interactive, value: closeHovered)
                 .transition(notePageTransition)
@@ -464,7 +486,8 @@ public struct DashboardView: View {
                 if let noteLoadError, displayedNote == nil {
                     PageMessage(
                         title: "Couldn’t open Example.md",
-                        detail: noteLoadError
+                        detail: noteLoadError,
+                        footerLabel: "COULDN’T OPEN NOTE"
                     )
                 } else if displayedNote == nil, state.vaults.isEmpty {
                     // The first thing a new install shows. It used to say
@@ -477,20 +500,21 @@ public struct DashboardView: View {
                         action: onConnectVault
                     )
                 } else if let note = displayedNote {
+                    let metadata = displayedNoteMetadata
+                        ?? NotePageMetadata.snapshot(for: note, in: state)
                     if let editorModel,
                        editing?.canEdit(note.url) == true {
-                        NotePageView(model: editorModel) { text in
-                            retainDraft(text, for: note.url)
-                        }
-                        .id(note.url)
+                        NotePageView(model: editorModel, metadata: metadata)
+                            .id(note.url)
                     } else {
-                        ReadOnlyNotePageView(document: note)
+                        ReadOnlyNotePageView(document: note, metadata: metadata)
                             .id(note.url)
                     }
                 } else {
                     PageMessage(
                         title: "No note open",
-                        detail: "Pick a note from your vault and it will appear here."
+                        detail: "Pick a note from your vault and it will appear here.",
+                        footerLabel: "WAITING FOR A NOTE"
                     )
                 }
             }
@@ -561,7 +585,9 @@ public struct DashboardView: View {
     private var closeZone: some View {
         ZStack {
             if DashboardCloseControlVisibility.shouldShow(
-                pointerAtTop: pointerAtTop,
+                pointerAtTop: pointerAtTop
+                    || showingChangeHistory
+                    || historyTriggerFocused,
                 showingHome: showingHome
             ) {
                 HStack(spacing: DashboardGutterLayout.gap) {
@@ -604,14 +630,19 @@ public struct DashboardView: View {
         ZStack(alignment: .leading) {
             Color.clear
             if let changes = changesForOpenNote {
-                FloatingHistoryButton(count: changes.count) {
+                FloatingHistoryButton(
+                    count: changes.count,
+                    focus: $historyTriggerFocused
+                ) {
                     // A decision here can write the note immediately. Land the
                     // user's pending draft first so it either becomes the
                     // proposal's current source or is safely recognised as an
                     // outdated rewrite instead of overwriting the decision a
                     // fraction of a second later.
                     editorModel?.flush()
-                    showingChangeHistory = true
+                    withAnimation(sheetArrivalAnimation) {
+                        showingChangeHistory = true
+                    }
                 }
                 .transition(gutterTransition)
             }
@@ -623,6 +654,14 @@ public struct DashboardView: View {
     /// itself in pieces is not read as a group.
     private var gutterCurve: Animation {
         Chamfer.Motion.reduce(Chamfer.Motion.quick, when: reduceMotion)
+    }
+
+    private var sheetArrivalAnimation: Animation {
+        Chamfer.Motion.reduce(Chamfer.Motion.sheetArrival, when: reduceMotion)
+    }
+
+    private var sheetDepartureAnimation: Animation {
+        Chamfer.Motion.reduce(Chamfer.Motion.sheetDeparture, when: reduceMotion)
     }
 
     private var gutterTransition: AnyTransition {
@@ -646,7 +685,13 @@ public struct DashboardView: View {
 
     private func dismissChangeHistory() {
         Haptics.commit()
-        showingChangeHistory = false
+        withAnimation(sheetDepartureAnimation) {
+            showingChangeHistory = false
+        }
+        // The trigger is kept in the hierarchy while the sheet is open, and
+        // becomes enabled in this same update rather than leaving AppKit a
+        // frame in which it has nowhere valid to return.
+        historyTriggerFocused = true
     }
 
     private func handleClose() {
@@ -678,18 +723,22 @@ public struct DashboardView: View {
     }
 
     private func openDocument(_ document: NoteDocument) {
+        let destinationKey = document.url.standardizedFileURL
         let current = state.searchableNotes.first {
-            $0.url == document.url
+            $0.url.standardizedFileURL == destinationKey
         } ?? document
 
-        if let editing, editing.canEdit(current.url), editorModel == nil {
-            editorModel = Self.makeEditor(for: current, editing: editing)
+        if let editing,
+           editing.canEdit(current.url),
+           editorSessions.editor(for: current.url) == nil {
+            editorSessions.retain(makeEditor(for: current, editing: editing), for: current.url)
         }
 
         withAnimation(
             Chamfer.Motion.reduce(Chamfer.Motion.navigation, when: reduceMotion)
         ) {
             displayedNote = current
+            displayedNoteMetadata = NotePageMetadata.snapshot(for: current, in: state)
             state.openNote = current
             tab = Tab.notes
             showingHome = false
@@ -699,7 +748,7 @@ public struct DashboardView: View {
     private func synchronizeOpenNote(_ document: NoteDocument?) {
         guard let document else {
             displayedNote = nil
-            editorModel = nil
+            displayedNoteMetadata = nil
             showingChangeHistory = false
             return
         }
@@ -708,10 +757,14 @@ public struct DashboardView: View {
 
         if isDifferentNote {
             displayedNote = document
-            if let editing, editing.canEdit(document.url) {
-                editorModel = Self.makeEditor(for: document, editing: editing)
-            } else {
-                editorModel = nil
+            displayedNoteMetadata = NotePageMetadata.snapshot(for: document, in: state)
+            if let editing,
+               editing.canEdit(document.url),
+               editorSessions.editor(for: document.url) == nil {
+                editorSessions.retain(
+                    makeEditor(for: document, editing: editing),
+                    for: document.url
+                )
             }
         } else if editorModel == nil {
             displayedNote = document
@@ -722,9 +775,17 @@ public struct DashboardView: View {
             // clean editor follows that new truth; a dirty one keeps its draft
             // and lets the compare-before-save guard report the conflict.
             displayedNote = document
-            self.editorModel = editing.map {
-                Self.makeEditor(for: document, editing: $0)
+            if let editing {
+                editorSessions.retain(
+                    makeEditor(for: document, editing: editing),
+                    for: document.url
+                )
             }
+        } else if editorModel?.text == document.text {
+            // A successful autosave publishes the saved document once. The
+            // editor already owns that text; only the dashboard's durable copy
+            // and the non-editing representation need to catch up.
+            displayedNote = document
         }
 
         // Whatever set `openNote` was asking for that note to be *shown*, and
@@ -810,6 +871,11 @@ public struct DashboardView: View {
             reject: { proposal in
                 state.proposals.removeAll { $0.id == proposal.id }
             },
+            setHunkSelected: { proposal, hunkID, selected in
+                update(proposal.id) {
+                    $0.setHunkSelected(hunkID, selected: selected)
+                }
+            },
             regenerate: { proposal in
                 update(proposal.id) { $0.state = .regenerating }
             },
@@ -848,8 +914,14 @@ public struct DashboardView: View {
             removeVault: { vaultID in
                 state.disconnectVault(vaultID)
             },
-            connectVault: onConnectVault,
-            reconnectVault: { _ in onConnectVault() },
+            connectVault: {
+                onConnectVault()
+                return nil
+            },
+            reconnectVault: { _ in
+                onConnectVault()
+                return nil
+            },
             updateRules: { vaultID, rules in
                 guard let index = state.vaults.firstIndex(where: { $0.id == vaultID })
                 else { return }
@@ -879,9 +951,23 @@ public struct DashboardView: View {
         as application: RewriteApplication,
         allowOutdated: Bool = false
     ) {
+        guard let proposal = state.proposals.first(where: {
+            $0.id == proposal.id && $0.state == .pending
+        }), proposal.changeCount > 0 else { return }
         let previous = state.searchableNotes
             .first { $0.url == proposal.note.url }?
             .text ?? ""
+        let appliedText: String?
+        if proposal.hasExcludedHunks {
+            // The complete candidate still contains unticked work. Replaying
+            // the kept hunks positionally is what turns the staged selection
+            // into the exact text this acceptance represents.
+            appliedText = TextDiff.apply(proposal.keptHunks, to: previous)
+        } else {
+            appliedText = proposal.proposedText
+                ?? TextDiff.apply(proposal.hunks, to: previous)
+        }
+        guard let appliedText else { return }
         let entry = HistoryEntry(
             note: proposal.note,
             path: proposal.note.url,
@@ -890,12 +976,7 @@ public struct DashboardView: View {
             mode: proposal.mode,
             modelID: proposal.modelID,
             previousText: previous,
-            // Positional, via the diff engine. A search-and-replace over the
-            // hunks edits the first line that happens to match, and notes
-            // repeat lines constantly — blank ones, `## Notes`, `- [ ]`.
-            appliedText: proposal.proposedText
-                ?? TextDiff.apply(proposal.hunks, to: previous)
-                ?? previous,
+            appliedText: appliedText,
             application: application,
             sourceWasOutdated: allowOutdated && state.isOutdated(proposal),
             retryCount: proposal.retryCount
@@ -910,46 +991,53 @@ public struct DashboardView: View {
     }
 
     private func restore(_ entry: HistoryEntry) {
-        guard let index = state.history.firstIndex(where: { $0.id == entry.id })
+        guard let current = state.history.first(where: { $0.id == entry.id }),
+              state.isHistoryActionable(current)
         else { return }
         withAnimation(
             Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion)
         ) {
-            state.history[index] = HistoryEntry(
-                id: entry.id,
-                note: entry.note,
-                path: entry.path,
-                vaultID: entry.vaultID,
-                occurredAt: entry.occurredAt,
-                mode: entry.mode,
-                modelID: entry.modelID,
-                previousText: entry.previousText,
-                appliedText: entry.appliedText,
-                application: entry.application,
-                sourceWasOutdated: entry.sourceWasOutdated,
-                retryCount: entry.retryCount,
-                ruleIDs: entry.ruleIDs,
-                outcome: .reverted(at: Date())
+            state.history.insert(
+                .restoration(of: current, replacing: current.appliedText),
+                at: 0
             )
         }
     }
 
-    private func retainDraft(_ text: String, for url: URL) {
-        let document = NoteDocument(url: url, text: text)
-        displayedNote = document
-        DashboardNoteDrafts.retain(document, in: &state)
+    private var editorModel: NoteEditorModel? {
+        guard let url = displayedNote?.url else { return nil }
+        return editorSessions.editor(for: url)
     }
 
     private static func makeEditor(
         for document: NoteDocument,
-        editing: NoteEditingConfiguration
+        editing: NoteEditingConfiguration,
+        didSave: @escaping (NoteDocument) -> Void
     ) -> NoteEditorModel {
-        NoteEditorModel(document: document) { text, expectedText in
+        NoteEditorModel(
+            document: document,
+            didSave: { text in
+                didSave(NoteDocument(url: document.url, text: text))
+            }
+        ) { text, expectedText in
             try editing.save(
                 NoteDocument(url: document.url, text: text),
                 replacing: expectedText
             )
         }
+    }
+
+    private func makeEditor(
+        for document: NoteDocument,
+        editing: NoteEditingConfiguration
+    ) -> NoteEditorModel {
+        Self.makeEditor(
+            for: document,
+            editing: editing,
+            didSave: { savedDocument in
+                DashboardNoteDocuments.retain(savedDocument, in: &state)
+            }
+        )
     }
 
     private func handleTabGesture(_ direction: TrackpadPanDirection) {

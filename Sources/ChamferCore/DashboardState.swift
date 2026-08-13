@@ -58,7 +58,7 @@ public struct DashboardState: Sendable, Equatable {
     public var openNote: NoteDocument?
     /// The connected vaults, each with its own overrides.
     public var vaults: [Vault]
-    /// Every rewrite that reached a conclusion, newest first once sorted.
+    /// Every rewrite or restore that reached a conclusion, newest first once sorted.
     /// Stored in full; the interface decides how much of it to show.
     public var history: [HistoryEntry]
     /// Supported note paths known to exist, including notes current rules keep
@@ -255,7 +255,16 @@ public struct DashboardState: Sendable, Equatable {
         guard let current = history.first(where: { $0.id == entry.id }) else {
             return false
         }
-        return current.canRestore && isHistoryNoteAvailable(current)
+        // Restore entries stay restorable, which makes Undo on a restore a
+        // natural redo. Once a later event names this one as its source it has
+        // already been undone, so leaving its control visible would offer an
+        // action whose only result is another copy of the same restore.
+        let hasBeenRestored = history.contains {
+            $0.action.restoredEntryID == current.id
+        }
+        return current.canRestore
+            && !hasBeenRestored
+            && isHistoryNoteAvailable(current)
     }
 
     public func isHistoryNoteAvailable(_ entry: HistoryEntry) -> Bool {
@@ -339,6 +348,8 @@ public struct DashboardState: Sendable, Equatable {
             modelID: proposal.modelID,
             vaultID: proposal.vaultID,
             retryCount: proposal.retryCount,
+            automaticReviewReason: proposal.automaticReviewReason,
+            excludedHunkIDs: proposal.excludedHunkIDs,
             state: proposal.state
         )
     }
@@ -365,6 +376,7 @@ public struct DashboardState: Sendable, Equatable {
             sourceWasOutdated: entry.sourceWasOutdated,
             retryCount: entry.retryCount,
             ruleIDs: entry.ruleIDs,
+            action: entry.action,
             outcome: entry.outcome
         )
     }

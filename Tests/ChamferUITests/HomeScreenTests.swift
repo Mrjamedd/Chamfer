@@ -12,6 +12,18 @@ import Testing
     #expect(Chamfer.Motion.interactiveDuration < Chamfer.Motion.navigationDuration)
 }
 
+/// Small controls keep their visual size, but their invisible reach must still
+/// meet the same minimum whether the visible thing is a 15pt tick or a 42pt
+/// search row.
+@Test func compactControlsExpandToTheMinimumHitTarget() {
+    for visualSize: CGFloat in [15, 18, 20, 28, 32, 34, 35, 38, 42, 44] {
+        let padding = Chamfer.Control.hitPadding(for: visualSize)
+        #expect(visualSize + padding * 2 >= Chamfer.Control.minimumHitSize)
+    }
+
+    #expect(Chamfer.Control.hitPadding(for: 52) == 0)
+}
+
 @Test func greetingsIncludeTimeSpecificCopyAndEnoughVariety() {
     let morning = HomeGreetingRotation.availableGreetings(hour: 8, name: "Anthony")
     let afternoon = HomeGreetingRotation.availableGreetings(hour: 14, name: "Anthony")
@@ -455,6 +467,32 @@ import Testing
     #expect(reduced == .zero)
 }
 
+@Test func emptyStateCardArrivesAheadOfTheGlowWithoutReducedMotionTravel() {
+    let movingGlow = EmptyStateMotion.glowScale(
+        isPresented: false,
+        reduceMotion: false
+    )
+    let movingCard = EmptyStateMotion.cardScale(
+        isPresented: false,
+        reduceMotion: false
+    )
+
+    #expect(movingGlow < movingCard)
+    #expect(movingCard < 1)
+    #expect(
+        EmptyStateMotion.glowScale(isPresented: true, reduceMotion: false) == 1
+    )
+    #expect(
+        EmptyStateMotion.cardScale(isPresented: true, reduceMotion: false) == 1
+    )
+    #expect(
+        EmptyStateMotion.glowScale(isPresented: false, reduceMotion: true) == 1
+    )
+    #expect(
+        EmptyStateMotion.cardScale(isPresented: false, reduceMotion: true) == 1
+    )
+}
+
 @Test func liveClockHandsTrackTheDisplayedTime() throws {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
@@ -498,4 +536,3 @@ private func homeDeckCard(_ index: Int) -> HomeNoteCardModel {
         role: .background
     )
 }
-

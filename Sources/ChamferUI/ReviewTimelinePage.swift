@@ -9,6 +9,7 @@ import SwiftUI
 public struct ReviewActions: Sendable {
     public var accept: @MainActor (Proposal, Bool) -> Void
     public var reject: @MainActor (Proposal) -> Void
+    public var setHunkSelected: @MainActor (Proposal, UUID, Bool) -> Void
     public var regenerate: @MainActor (Proposal) -> Void
     public var openNote: @MainActor (NoteSummary) -> Void
     public var retry: @MainActor (Proposal) -> Void
@@ -18,6 +19,9 @@ public struct ReviewActions: Sendable {
     public init(
         accept: @escaping @MainActor (Proposal, Bool) -> Void = { _, _ in },
         reject: @escaping @MainActor (Proposal) -> Void = { _ in },
+        setHunkSelected: @escaping @MainActor (Proposal, UUID, Bool) -> Void = {
+            _, _, _ in
+        },
         regenerate: @escaping @MainActor (Proposal) -> Void = { _ in },
         openNote: @escaping @MainActor (NoteSummary) -> Void = { _ in },
         retry: @escaping @MainActor (Proposal) -> Void = { _ in },
@@ -25,6 +29,7 @@ public struct ReviewActions: Sendable {
     ) {
         self.accept = accept
         self.reject = reject
+        self.setHunkSelected = setHunkSelected
         self.regenerate = regenerate
         self.openNote = openNote
         self.retry = retry
@@ -50,7 +55,7 @@ private struct TimelineShape: Equatable {
 /// Review and History as one page.
 ///
 /// Pending rewrites sit at the top grouped by vault; below a hairline, every
-/// rewrite that already happened, newest first. The full stored history is the
+/// rewrite or restore that already happened, newest first. The full stored history is the
 /// end of the same scroll rather than somewhere else to go.
 struct ReviewTimelinePage: View {
     @Environment(\.chamferNow) private var now
@@ -68,6 +73,7 @@ struct ReviewTimelinePage: View {
     /// has since changed. Holding the proposal rather than a flag means the
     /// warning can name it.
     @LegacyState private var confirmingOutdated: Proposal?
+    @FocusState private var confirmationTrigger: UUID?
 
     private var timeline: ReviewTimeline {
         state.timeline(limit: showingEverything ? .max : HistoryWindow.standardLimit)
@@ -90,7 +96,8 @@ struct ReviewTimelinePage: View {
                     // to solve — it is the app working — so it gets no button.
                     PageMessage(
                         title: "Nothing yet",
-                        detail: "Rewrites waiting on your judgement appear here, and everything Chamfer has already changed stays below them."
+                        detail: "Rewrites waiting on your judgement appear here, and everything Chamfer has already changed stays below them.",
+                        footerLabel: "WAITING FOR REWRITES"
                     )
                 }
             } else {
@@ -124,26 +131,23 @@ struct ReviewTimelinePage: View {
                 }
             }
         }
+        .disabled(confirmingOutdated != nil)
         .overlay {
             if let proposal = confirmingOutdated {
                 OutdatedConfirmation(
                     proposal: proposal,
                     onApply: {
-                        dismissConfirmation()
+                        dismissConfirmation(performHaptic: false)
                         commit { actions.accept(proposal, true) }
                     },
                     onRegenerate: {
-                        dismissConfirmation()
+                        dismissConfirmation(performHaptic: false)
                         commit { actions.regenerate(proposal) }
                     },
-                    onCancel: dismissConfirmation
+                    onCancel: { dismissConfirmation() }
                 )
             }
         }
-        .animation(
-            Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
-            value: confirmingOutdated?.id
-        )
         .onChange(of: state.proposals) {
             // A tick left on a rewrite that has since been judged must never
             // widen the next bulk action.
@@ -156,7 +160,11 @@ struct ReviewTimelinePage: View {
     @ViewBuilder
     private func pendingGroup(_ group: ReviewTimeline.PendingGroup) -> some View {
         VStack(alignment: .leading, spacing: Chamfer.Space.loose) {
-            PageSectionHeader(title: group.vaultName, count: group.proposals.count)
+            SectionHeader(
+                group.vaultName,
+                count: group.proposals.count,
+                surface: .page
+            )
 
             ForEach(group.proposals) { proposal in
                 PendingRewriteRow(
@@ -166,9 +174,13 @@ struct ReviewTimelinePage: View {
                     onToggleSelection: { selection.toggle(proposal.id) },
                     onAccept: { accept(proposal) },
                     onReject: { commit { actions.reject(proposal) } },
+                    onSetHunkSelected: { hunkID, selected in
+                        actions.setHunkSelected(proposal, hunkID, selected)
+                    },
                     onRegenerate: { commit { actions.regenerate(proposal) } },
                     onRetry: { commit { actions.retry(proposal) } },
-                    onOpen: { actions.openNote(proposal.note) }
+                    onOpen: { actions.openNote(proposal.note) },
+                    acceptFocus: $confirmationTrigger
                 )
                 // Judged rewrites leave upward, towards the past section they
                 // are joining. A row that faded on the spot read as being
@@ -197,7 +209,9 @@ struct ReviewTimelinePage: View {
     /// move was the one moving.
     private func bulkBar(_ timeline: ReviewTimeline) -> AnyView? {
         let chosen = selection.isEmpty ? [] : selection.resolve(in: state.proposals)
-        let safeToAccept = chosen.filter { !state.isOutdated($0) }
+        let safeToAccept = chosen.filter {
+            !state.isOutdated($0) && $0.changeCount > 0
+        }
 
         return AnyView(
             HStack(spacing: Chamfer.Space.snug) {
@@ -223,6 +237,15 @@ struct ReviewTimelinePage: View {
             // Reserved whether or not anything is selected. The controls come
             // and go inside a slot that does not.
             .frame(height: Self.bulkBarHeight, alignment: .center)
+            .padding(.horizontal, Chamfer.Space.snug)
+            .background(Chamfer.Palette.pageInset)
+            .clipShape(
+                RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
+                    .strokeBorder(Chamfer.Palette.pageInsetStroke, lineWidth: 1)
+            }
             .opacity(chosen.isEmpty ? 0 : 1)
             .animation(
                 Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
@@ -240,7 +263,11 @@ struct ReviewTimelinePage: View {
     @ViewBuilder
     private func pastSection(_ timeline: ReviewTimeline) -> some View {
         VStack(alignment: .leading, spacing: Chamfer.Space.loose) {
-            PageSectionHeader(title: "Already done", count: timeline.storedCount)
+            SectionHeader(
+                "Already done",
+                count: timeline.storedCount,
+                surface: .page
+            )
 
             VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
                 ForEach(timeline.past) { entry in
@@ -284,12 +311,27 @@ struct ReviewTimelinePage: View {
             return
         }
         Haptics.pop()
-        confirmingOutdated = proposal
+        confirmationTrigger = proposal.id
+        withAnimation(sheetArrivalAnimation) {
+            confirmingOutdated = proposal
+        }
     }
 
-    private func dismissConfirmation() {
-        Haptics.commit()
-        confirmingOutdated = nil
+    private func dismissConfirmation(performHaptic: Bool = true) {
+        if performHaptic { Haptics.commit() }
+        let trigger = confirmingOutdated?.id
+        withAnimation(sheetDepartureAnimation) {
+            confirmingOutdated = nil
+        }
+        if let trigger { confirmationTrigger = trigger }
+    }
+
+    private var sheetArrivalAnimation: Animation {
+        Chamfer.Motion.reduce(Chamfer.Motion.sheetArrival, when: reduceMotion)
+    }
+
+    private var sheetDepartureAnimation: Animation {
+        Chamfer.Motion.reduce(Chamfer.Motion.sheetDeparture, when: reduceMotion)
     }
 
     /// One punctuation mark per decision, wherever the decision came from.
@@ -301,6 +343,52 @@ struct ReviewTimelinePage: View {
 
 // MARK: - Pending row
 
+enum PendingRewriteCardTone: Equatable {
+    case neutral
+    case heldForReview
+    case outdated
+    case failed
+
+    /// Failure still wins over attention because a row that cannot proceed is
+    /// the first thing the eye needs to find. Outdated comes next because it
+    /// can overwrite newer writing, while a held rewrite has lost nothing and
+    /// only needs a quiet mark. Intentional Review is ordinary work, so it
+    /// remains entirely in the paper-and-stroke family.
+    static func resolve(for proposal: Proposal, isOutdated: Bool) -> Self {
+        if proposal.state.failure != nil { return .failed }
+        if isOutdated { return .outdated }
+        if proposal.automaticReviewReason != nil { return .heldForReview }
+        return .neutral
+    }
+
+    var tint: ChamferCardSurface.Tint {
+        switch self {
+        case .neutral:
+            ChamferCardSurface.Tint(
+                primary: Chamfer.Palette.paperStroke,
+                secondary: Chamfer.Palette.paperSunken
+            )
+        case .heldForReview:
+            // Pink is the brand's non-warning accent and stays unmistakable
+            // beside amber even after the surface lowers both opacities.
+            ChamferCardSurface.Tint(
+                primary: Chamfer.Palette.pink,
+                secondary: Chamfer.Palette.pinkSoft
+            )
+        case .outdated:
+            ChamferCardSurface.Tint(
+                primary: Chamfer.Palette.attention,
+                secondary: Chamfer.Palette.brass
+            )
+        case .failed:
+            ChamferCardSurface.Tint(
+                primary: Chamfer.Palette.danger,
+                secondary: Chamfer.Palette.dangerSoft
+            )
+        }
+    }
+}
+
 struct PendingRewriteRow: View {
     @Environment(\.chamferNow) private var now
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -311,65 +399,99 @@ struct PendingRewriteRow: View {
     let onToggleSelection: () -> Void
     let onAccept: () -> Void
     let onReject: () -> Void
+    let onSetHunkSelected: (UUID, Bool) -> Void
     let onRegenerate: () -> Void
     let onRetry: () -> Void
     let onOpen: () -> Void
     var showsSelection = true
     var showsOpenAction = true
+    var acceptFocus: FocusState<UUID?>.Binding?
 
     @LegacyState private var isHovered = false
     @LegacyState private var showingEveryChange = false
+    @LegacyState private var navigation = KeyboardNavigation.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
-            header
-            metadata
-
-            if isOutdated {
-                InlineNotice(
-                    symbol: "clock.arrow.circlepath",
-                    tint: Chamfer.Palette.brass,
-                    background: Chamfer.Palette.brassSoft,
-                    text: "The note changed after this rewrite was made. Regenerate it, or apply it and replace what you wrote since."
-                )
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: Chamfer.Space.tight) {
+                header
+                metadata
             }
+            .padding(.bottom, Chamfer.Space.roomy)
 
-            if let reason = proposal.automaticReviewReason {
-                InlineNotice(
-                    symbol: "shield.lefthalf.filled",
-                    tint: Chamfer.Palette.brass,
-                    background: Chamfer.Palette.brassSoft,
-                    text: reason.explanation(for: proposal.mode)
-                )
-            }
+            PageRule()
 
-            if let failure = proposal.state.failure {
-                InlineNotice(
-                    symbol: "exclamationmark.octagon.fill",
-                    tint: Chamfer.Palette.danger,
-                    background: Chamfer.Palette.dangerSoft,
-                    text: "\(failure.title). \(failure.detail)"
-                )
-            }
+            VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
+                if isOutdated {
+                    InlineNotice(
+                        symbol: "clock.arrow.circlepath",
+                        tone: .accent,
+                        text: "The note changed after this rewrite was made. Regenerate it, or apply it and replace what you wrote since."
+                    )
+                }
 
-            if ProcessingGuard.isCloud(proposal.modelID) {
-                InlineNotice(
-                    symbol: "cloud",
-                    tint: Chamfer.Palette.brass,
-                    background: Chamfer.Palette.brassSoft,
-                    text: "This rewrite was produced by the cloud model, so the note left this Mac."
-                )
-            }
+                if let reason = proposal.automaticReviewReason {
+                    InlineNotice(
+                        symbol: "shield.lefthalf.filled",
+                        tone: .accent,
+                        text: reason.explanation(for: proposal.mode)
+                    )
+                }
 
-            if proposal.state == .regenerating {
-                RegeneratingPlaceholder()
-            } else {
-                changes
+                if let failure = proposal.state.failure {
+                    InlineNotice(
+                        symbol: "exclamationmark.octagon.fill",
+                        tone: .danger,
+                        text: "\(failure.title). \(failure.detail)"
+                    )
+                }
+
+                if ProcessingGuard.isCloud(proposal.modelID) {
+                    InlineNotice(
+                        symbol: "cloud",
+                        tone: .accent,
+                        text: "This rewrite was produced by the cloud model, so the note left this Mac."
+                    )
+                }
+
+                if proposal.changeCount == 0, !proposal.hunks.isEmpty {
+                    InlineNotice(
+                        symbol: "minus.circle",
+                        tone: .accent,
+                        text: "No changes are selected, so there is nothing to apply. Select a change, or reject this rewrite outright."
+                    )
+                }
+
+                if proposal.state == .regenerating {
+                    RegeneratingPlaceholder()
+                } else {
+                    changes
+                }
             }
+            .padding(.vertical, Chamfer.Space.roomy)
+
+            PageRule()
 
             actionRow
+                .padding(.top, Chamfer.Space.roomy)
         }
-        .padding(.vertical, Chamfer.Space.snug)
+        .padding(Chamfer.Space.roomy)
+        .background {
+            ChamferCardSurface(
+                tint: cardTint,
+                radius: Chamfer.Radius.card,
+                presentation: ModelsSurfaceResponse.presentation(
+                    for: .local,
+                    isActive: false,
+                    isHovered: false
+                )
+            )
+        }
+        .contentShape(
+            RoundedRectangle(cornerRadius: Chamfer.Radius.card, style: .continuous)
+        )
+        .environment(\.chamferSurface, .paper)
+        .chamferHoverLift(isActive: isHovered)
         .onHover { hovering in
             withAnimation(Chamfer.Motion.reduce(Chamfer.Motion.quick, when: reduceMotion)) {
                 isHovered = hovering
@@ -379,12 +501,16 @@ struct PendingRewriteRow: View {
             Chamfer.Motion.reduce(Chamfer.Motion.navigation, when: reduceMotion),
             value: showingEveryChange
         )
-        // The row is a title, a line of metadata, up to four notices and a
+        // The row is a title, a line of metadata, its notices and a
         // diff. Left as separate elements, VoiceOver walks all of it before
         // reaching the buttons; combined, the whole rewrite is one thing to
         // judge, which is what it is.
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilitySummary)
+    }
+
+    private var cardTint: ChamferCardSurface.Tint {
+        PendingRewriteCardTone.resolve(for: proposal, isOutdated: isOutdated).tint
     }
 
     private var accessibilitySummary: String {
@@ -399,29 +525,43 @@ struct PendingRewriteRow: View {
             parts.append(reason.explanation(for: proposal.mode))
         }
         parts.append(
-            proposal.changeCount == 1
-                ? "1 change"
-                : "\(proposal.changeCount) changes"
+            proposal.changeCount == 0 ? "No changes selected" : changeCountText
         )
         return parts.joined(separator: ". ")
     }
 
+    private var changeCountText: String {
+        proposal.changeCount == 1
+            ? "1 change"
+            : "\(proposal.changeCount) changes"
+    }
+
     /// Every change in the note, unfolded in place.
     ///
-    /// The first is always shown and the rest are one click away, because
-    /// version 1.0 approves a rewrite whole: being asked to accept "and three
-    /// more changes" sight unseen is not informed consent, and sending the user
-    /// to another surface to look would break the page's one-page rule.
+    /// The first is always shown and the rest are one click away. A hunk the
+    /// user has unticked remains unfolded even after "Show less": hiding a
+    /// staged selection would conceal the decision it carries.
     @ViewBuilder
     private var changes: some View {
-        let visible = showingEveryChange ? proposal.hunks : Array(proposal.hunks.prefix(1))
+        let firstID = proposal.hunks.first?.id
+        let collapsed = proposal.hunks.filter {
+            $0.id == firstID || proposal.excludedHunkIDs.contains($0.id)
+        }
+        let visible = showingEveryChange ? proposal.hunks : collapsed
+        let hiddenCount = proposal.hunks.count - visible.count
 
         VStack(alignment: .leading, spacing: Chamfer.Space.snug) {
             ForEach(visible) { hunk in
-                DiffHunkView(hunk)
+                HunkDecisionRow(
+                    hunk: hunk,
+                    isSelected: !proposal.excludedHunkIDs.contains(hunk.id),
+                    onSetSelected: { selected in
+                        onSetHunkSelected(hunk.id, selected)
+                    }
+                )
             }
 
-            if proposal.hunks.count > 1 {
+            if showingEveryChange || hiddenCount > 0 {
                 Button {
                     Haptics.pop()
                     withAnimation(
@@ -436,7 +576,7 @@ struct PendingRewriteRow: View {
                         Text(
                             showingEveryChange
                                 ? "Show less"
-                                : "Show \(proposal.hunks.count - 1) more change\(proposal.hunks.count == 2 ? "" : "s")"
+                                : "Show \(hiddenCount) more change\(hiddenCount == 1 ? "" : "s")"
                         )
                     }
                 }
@@ -449,9 +589,10 @@ struct PendingRewriteRow: View {
         HStack(alignment: .firstTextBaseline, spacing: Chamfer.Space.regular) {
             if showsSelection {
                 SelectionTick(isSelected: isSelected, action: onToggleSelection)
-                    // The tick is for bulk work, so it stays out of sight until
-                    // the pointer is on the row or something is already ticked.
-                    .opacity(isSelected || isHovered ? 1 : 0)
+                    // The card's rise says where the pointer is; the tick
+                    // appears in response so bulk selection does not become a
+                    // permanent column of controls down the page.
+                    .opacity(isSelected || isHovered || navigation.isActive ? 1 : 0)
             }
 
             Text(proposal.note.title)
@@ -462,6 +603,10 @@ struct PendingRewriteRow: View {
 
             Spacer(minLength: Chamfer.Space.snug)
 
+            Pill(
+                proposal.changeCount == 0 ? "No changes selected" : changeCountText,
+                tone: .neutral
+            )
             if isOutdated {
                 Pill("Outdated", symbol: "clock.badge.exclamationmark", tone: .accent)
             }
@@ -510,9 +655,13 @@ struct PendingRewriteRow: View {
             } else if proposal.state == .regenerating {
                 Button("Reject", action: onReject)
                     .buttonStyle(ChamferButtonStyle(.secondary))
-            } else {
-                Button("Accept", action: onAccept)
+            } else if proposal.changeCount == 0 {
+                Button("Reject rewrite", action: onReject)
                     .buttonStyle(ChamferButtonStyle(.primary))
+                Button("Regenerate", action: onRegenerate)
+                    .buttonStyle(ChamferButtonStyle(.quiet))
+            } else {
+                acceptButton
                 Button("Reject", action: onReject)
                     .buttonStyle(ChamferButtonStyle(.secondary))
                 Button("Regenerate", action: onRegenerate)
@@ -523,6 +672,54 @@ struct PendingRewriteRow: View {
                 Button("Open note", action: onOpen)
                     .buttonStyle(ChamferButtonStyle(.quiet))
             }
+        }
+    }
+
+    @ViewBuilder
+    private var acceptButton: some View {
+        let button = Button(acceptButtonTitle, action: onAccept)
+            .buttonStyle(ChamferButtonStyle(.primary))
+
+        if let acceptFocus {
+            button.focused(acceptFocus, equals: proposal.id)
+        } else {
+            button
+        }
+    }
+
+    private var acceptButtonTitle: String {
+        guard proposal.changeCount != proposal.hunks.count else { return "Accept" }
+        return "Accept \(proposal.changeCount) of \(proposal.hunks.count) changes"
+    }
+}
+
+/// One offered change with the same always-visible selection language as the
+/// rewrite that contains it.
+private struct HunkDecisionRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let hunk: Hunk
+    let isSelected: Bool
+    let onSetSelected: (Bool) -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Chamfer.Space.regular) {
+            SelectionTick(isSelected: isSelected, action: toggle)
+                .padding(.top, Chamfer.Space.regular)
+            DiffHunkView(hunk, isSelected: isSelected)
+        }
+        .animation(
+            Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
+            value: isSelected
+        )
+    }
+
+    private func toggle() {
+        Haptics.pop()
+        withAnimation(
+            Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion)
+        ) {
+            onSetSelected(!isSelected)
         }
     }
 }
@@ -556,9 +753,6 @@ private struct HistoryEntryRow: View {
                         .foregroundStyle(Chamfer.Palette.pageText)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if case .reverted = entry.outcome {
-                        Pill("Undone", tone: .neutral)
-                    }
                 }
                 Text(detail)
                     .font(Chamfer.TypeScale.caption)
@@ -569,8 +763,15 @@ private struct HistoryEntryRow: View {
 
             Spacer(minLength: Chamfer.Space.snug)
 
-            // Undo is the one control that matters here, and it appears on the
-            // row the pointer is on rather than on all two hundred at once.
+            // The hover fill is shared with the versions sheet's row, so the two
+            // history lists agree about what a row is. The resting opacity of
+            // the controls is deliberately not shared, because the two lists are
+            // not the same length: the sheet shows one note's handful of
+            // versions, where a faint Restore is a useful hint, and this shows
+            // every change Chamfer has ever made. Two hundred rows each holding
+            // a ghosted Undo and Open is a column of repeated words down the
+            // right-hand edge, so here they stay out of sight until the pointer
+            // names a row.
             HStack(spacing: Chamfer.Space.tight) {
                 if canRestore {
                     Button("Undo", action: onRestore)
@@ -588,6 +789,11 @@ private struct HistoryEntryRow: View {
                 .foregroundStyle(Chamfer.Palette.pageTextSoft)
                 .frame(minWidth: 64, alignment: .trailing)
         }
+        .padding(Chamfer.Space.snug)
+        .background(isHovered ? Chamfer.Palette.paperSunken : .clear)
+        .clipShape(
+            RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
+        )
         .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(Chamfer.Motion.reduce(Chamfer.Motion.quick, when: reduceMotion)) {
@@ -601,6 +807,7 @@ private struct HistoryEntryRow: View {
     }
 
     private var symbol: String {
+        if entry.action.isRestore { return "arrow.uturn.backward" }
         if !entry.ruleIDs.isEmpty, case .applied = entry.outcome {
             return "wrench.and.screwdriver"
         }
@@ -612,7 +819,8 @@ private struct HistoryEntryRow: View {
     }
 
     private var tint: Color {
-        switch entry.outcome {
+        if entry.action.isRestore { return Chamfer.Palette.pageTextSoft }
+        return switch entry.outcome {
         case .applied: Chamfer.Palette.positive
         case .failed: Chamfer.Palette.danger
         case .reverted: Chamfer.Palette.pageTextSoft
@@ -682,6 +890,7 @@ struct OutdatedConfirmation: View {
             .frame(maxWidth: 420)
             .background(Chamfer.Palette.paper)
             .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous))
+            .chamferRing(radius: Chamfer.Radius.large)
             .chamferFloat()
             .transition(sheetTransition)
         }
@@ -690,7 +899,7 @@ struct OutdatedConfirmation: View {
     /// Grows from slightly small and fades, and leaves the same way it came.
     private var sheetTransition: AnyTransition {
         if reduceMotion { return .opacity }
-        return .scale(scale: 0.96, anchor: .center).combined(with: .opacity)
+        return .scale(scale: 0.96, anchor: .top).combined(with: .opacity)
     }
 }
 
@@ -720,8 +929,12 @@ private struct SelectionTick: View {
                 }
             }
             .frame(width: 15, height: 15)
+            .padding(Chamfer.Control.hitPadding(for: 15))
+            .contentShape(Rectangle())
+            .padding(-Chamfer.Control.hitPadding(for: 15))
         }
         .buttonStyle(.plain)
+        .chamferFocusableCircle()
         .animation(
             Chamfer.Motion.reduce(Chamfer.Motion.quick, when: reduceMotion),
             value: isSelected
@@ -786,31 +999,5 @@ private struct RegeneratingPlaceholder: View {
             .offset(x: phase * geometry.size.width)
         }
         .allowsHitTesting(false)
-    }
-}
-
-/// A tinted line of explanation inside a row — the outdated warning, a
-/// failure, a note that this one left the device.
-private struct InlineNotice: View {
-    let symbol: String
-    let tint: Color
-    let background: Color
-    let text: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: Chamfer.Space.snug) {
-            Image(systemName: symbol)
-                .font(.system(size: 11))
-                .foregroundStyle(tint)
-                .padding(.top, 1)
-            Text(text)
-                .font(Chamfer.TypeScale.caption)
-                .foregroundStyle(Chamfer.Palette.textOnPaper)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .padding(Chamfer.Space.snug)
-        .background(background)
-        .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous))
     }
 }

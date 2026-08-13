@@ -8,7 +8,7 @@ import Foundation
 /// call sites are trusted to remember — it is why failures are a value that
 /// gets recorded rather than an early `return`, so the interface can always
 /// say what happened and offer the retry.
-public enum RewriteFailure: Sendable, Equatable, Hashable, Codable {
+public enum RewriteFailure: Error, Sendable, Equatable, Hashable, Codable {
     case modelUnavailable(model: String)
     case cloudRequestFailed(detail: String)
     case localModelFailed(detail: String)
@@ -76,13 +76,30 @@ public enum RewriteFailure: Sendable, Equatable, Hashable, Codable {
 
 // MARK: - Entry
 
-/// One rewrite that reached a conclusion, kept forever.
+/// One rewrite or restore that reached a conclusion, kept forever.
 ///
 /// Holds both texts in full rather than a diff. A diff is smaller but it can
 /// only be replayed against the exact bytes it was made from, and the one
 /// moment this record has to work is the moment the file on disk is *not*
 /// what it was. Restoring must never depend on the thing being restored.
 public struct HistoryEntry: Sendable, Identifiable, Equatable, Codable {
+    /// What kind of write this entry records.
+    ///
+    /// Outcome answers whether the write succeeded; action answers why it was
+    /// made. Keeping those separate lets an applied rewrite remain applied
+    /// after a later restore records the inverse write as its own event.
+    public enum Action: Sendable, Equatable, Codable {
+        case rewrite
+        case restore(sourceEntryID: UUID)
+
+        public var restoredEntryID: UUID? {
+            if case let .restore(sourceEntryID) = self { return sourceEntryID }
+            return nil
+        }
+
+        public var isRestore: Bool { restoredEntryID != nil }
+    }
+
     public enum Outcome: Sendable, Equatable, Codable {
         case applied
         case failed(RewriteFailure)
@@ -120,6 +137,7 @@ public struct HistoryEntry: Sendable, Identifiable, Equatable, Codable {
     /// Non-empty for the deterministic cleanup pass. These entries represent
     /// a real snapshotted write, but no model was involved.
     public let ruleIDs: [String]
+    public let action: Action
     public let outcome: Outcome
 
     public init(
@@ -136,6 +154,7 @@ public struct HistoryEntry: Sendable, Identifiable, Equatable, Codable {
         sourceWasOutdated: Bool = false,
         retryCount: Int = 0,
         ruleIDs: [String] = [],
+        action: Action = .rewrite,
         outcome: Outcome = .applied
     ) {
         self.id = id
@@ -151,13 +170,14 @@ public struct HistoryEntry: Sendable, Identifiable, Equatable, Codable {
         self.sourceWasOutdated = sourceWasOutdated
         self.retryCount = retryCount
         self.ruleIDs = ruleIDs
+        self.action = action
         self.outcome = outcome
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, note, path, vaultID, occurredAt, mode, modelID
         case previousText, appliedText, application, sourceWasOutdated
-        case retryCount, ruleIDs, outcome
+        case retryCount, ruleIDs, action, outcome
     }
 
     public init(from decoder: Decoder) throws {
@@ -175,6 +195,10 @@ public struct HistoryEntry: Sendable, Identifiable, Equatable, Codable {
         sourceWasOutdated = try values.decode(Bool.self, forKey: .sourceWasOutdated)
         retryCount = try values.decode(Int.self, forKey: .retryCount)
         ruleIDs = try values.decodeIfPresent([String].self, forKey: .ruleIDs) ?? []
+        // History written before restores became first-class events contains
+        // only rewrites. Defaulting rather than migrating preserves exactly
+        // what those records knew and keeps the old file readable.
+        action = try values.decodeIfPresent(Action.self, forKey: .action) ?? .rewrite
         outcome = try values.decode(Outcome.self, forKey: .outcome)
     }
 
@@ -193,21 +217,47 @@ public struct HistoryEntry: Sendable, Identifiable, Equatable, Codable {
         try values.encode(sourceWasOutdated, forKey: .sourceWasOutdated)
         try values.encode(retryCount, forKey: .retryCount)
         if !ruleIDs.isEmpty { try values.encode(ruleIDs, forKey: .ruleIDs) }
+        if action != .rewrite { try values.encode(action, forKey: .action) }
         try values.encode(outcome, forKey: .outcome)
     }
 
-    /// Only an applied rewrite that has not already been undone can be undone.
+    /// Builds the inverse write as a new event rather than changing the event
+    /// it undoes. Both restore paths use this so persisted history and the
+    /// gallery cannot disagree about which text belongs on either side.
+    public static func restoration(
+        of source: HistoryEntry,
+        replacing replacedText: String,
+        occurredAt: Date = Date()
+    ) -> HistoryEntry {
+        HistoryEntry(
+            note: source.note,
+            path: source.path,
+            vaultID: source.vaultID,
+            occurredAt: occurredAt,
+            mode: source.mode,
+            modelID: source.modelID,
+            previousText: replacedText,
+            appliedText: source.previousText,
+            application: .review,
+            action: .restore(sourceEntryID: source.id)
+        )
+    }
+
+    /// Any successful write can be restored; the dashboard derives whether a
+    /// later restore has already consumed it from the append-only sequence.
     public var canRestore: Bool { outcome.isApplied }
 
     /// The short facts under the title: mode, model, and anything unusual.
     /// Reads as a sentence rather than a row of pills, because most entries
     /// are unremarkable and should not shout.
     public func summary(since reference: Date) -> String {
+        if action.isRestore { return "Previous version restored" }
+        if case .reverted = outcome { return "Rewrite was later undone" }
         if !ruleIDs.isEmpty {
             let count = ruleIDs.count
-            return "Rules · \(count) repair\(count == 1 ? "" : "s") · automatic"
+            return "Rules applied · \(count) repair\(count == 1 ? "" : "s") · automatic"
         }
-        var parts = [mode.title, modelID]
+        var parts = ["Rewrite applied", mode.title, modelID]
         if sourceWasOutdated { parts.append("outdated source") }
         if retryCount > 0 { parts.append("retried \(retryCount)×") }
         parts.append(application == .automatic ? "automatic" : "approved")

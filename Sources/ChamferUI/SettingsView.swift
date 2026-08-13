@@ -168,26 +168,27 @@ public struct SettingsView: View {
 
     private var privacy: some View {
         VStack(alignment: .leading, spacing: Chamfer.Space.roomy) {
-            SettingsHeading(
+            ConfigurationGroup(
                 title: "Where your notes are processed",
-                detail: "Model selection lives on the Models page. This is the limit that sits over it."
-            )
-
-            SettingRow(
-                title: "Keep everything on this device",
-                detail: "Cloud models are refused, whatever a vault or folder asks for."
+                caption: "Model selection lives on the Models page. This is the limit that sits over it.",
+                symbol: "lock"
             ) {
-                optionalChoice(
-                    preferences.localProcessingOnly,
-                    label: "Keep everything on this device"
-                ) { preferences.localProcessingOnly = $0 }
-            }
+                SettingRow(
+                    title: "Keep everything on this device",
+                    detail: "Cloud models are refused, whatever a vault or folder asks for."
+                ) {
+                    optionalChoice(
+                        preferences.localProcessingOnly,
+                        label: "Keep everything on this device"
+                    ) { preferences.localProcessingOnly = $0 }
+                }
 
-            if preferences.localProcessingOnly == true {
-                InlineFact(
-                    symbol: "lock",
-                    text: "A vault set to the cloud model reports as failed rather than running there. The local model is unaffected — it never leaves this Mac in the first place."
-                )
+                if preferences.localProcessingOnly == true {
+                    InlineFact(
+                        symbol: "lock",
+                        text: "A vault set to the cloud model reports as failed rather than running there. The local model is unaffected — it never leaves this Mac in the first place."
+                    )
+                }
             }
         }
     }
@@ -196,49 +197,47 @@ public struct SettingsView: View {
 
     private var notifications: some View {
         VStack(alignment: .leading, spacing: Chamfer.Space.roomy) {
-            SettingsHeading(
+            ConfigurationGroup(
                 title: "What Chamfer tells you about",
-                detail: "Each of these is independent."
-            )
-
-            ForEach(NotificationCategory.allCases) { category in
-                SettingRow(
-                    title: category.title,
-                    detail: category.detail
-                ) {
-                    optionalChoice(
-                        preferences.notificationChoice(for: category),
-                        label: category.title
-                    ) { choice in
-                        guard let enabled = choice else {
-                            preferences.clearNotificationChoice(category)
-                            return
+                caption: "Each of these is independent.",
+                symbol: "bell"
+            ) {
+                ForEach(NotificationCategory.allCases) { category in
+                    SettingRow(
+                        title: category.title,
+                        detail: category.detail
+                    ) {
+                        optionalChoice(
+                            preferences.notificationChoice(for: category),
+                            label: category.title
+                        ) { choice in
+                            guard let enabled = choice else {
+                                preferences.clearNotificationChoice(category)
+                                return
+                            }
+                            preferences.setNotification(category, enabled: enabled)
                         }
-                        preferences.setNotification(category, enabled: enabled)
                     }
                 }
             }
 
-            // Its own heading rather than a bare rule. Opening at login is not
-            // a notification, and while it hung off a divider at the foot of
-            // this list it read as an orphan in somebody else's section.
-            SettingsHeading(
+            ConfigurationGroup(
                 title: "When Chamfer runs",
-                detail: "Chamfer watches your notes for as long as it is running, and stops entirely when you quit it."
-            )
-            .padding(.top, Chamfer.Space.snug)
-
-            SettingRow(
-                title: "Open at login",
-                detail: "Start watching as soon as you log in, without opening the window."
+                caption: "Chamfer watches your notes for as long as it is running, and stops entirely when you quit it.",
+                symbol: "power"
             ) {
-                optionalChoice(preferences.launchAtLogin, label: "Open at login") {
-                    preferences.launchAtLogin = $0
+                SettingRow(
+                    title: "Open at login",
+                    detail: "Start watching as soon as you log in, without opening the window."
+                ) {
+                    optionalChoice(preferences.launchAtLogin, label: "Open at login") {
+                        preferences.launchAtLogin = $0
+                    }
                 }
-            }
 
-            if let launchAtLoginNote {
-                InlineFact(symbol: "exclamationmark.triangle", text: launchAtLoginNote)
+                if let launchAtLoginNote {
+                    InlineFact(symbol: "exclamationmark.triangle", text: launchAtLoginNote)
+                }
             }
         }
     }
@@ -247,40 +246,41 @@ public struct SettingsView: View {
 
     private var vaultSettings: some View {
         VStack(alignment: .leading, spacing: Chamfer.Space.roomy) {
-            SettingsHeading(
+            ConfigurationGroup(
                 title: "Reset vault behavior",
-                detail: "Keep every vault connected while removing the choices that control how Chamfer processes it."
-            )
-
-            SettingRow(
-                title: "Clear all vault settings",
-                detail: vaultSettingsCount == 0
-                    ? "No vault currently has processing settings."
-                    : "Clears stored processing settings from \(vaultSettingsCount.formatted()) vault\(vaultSettingsCount == 1 ? "" : "s")."
+                caption: "Keep every vault connected while removing the choices that control how Chamfer processes it.",
+                symbol: "arrow.counterclockwise"
             ) {
-                Button("Clear All Vault Settings", role: .destructive) {
-                    showingClearConfirmation = true
+                SettingRow(
+                    title: "Clear all vault settings",
+                    detail: vaultSettingsCount == 0
+                        ? "No vault currently has processing settings."
+                        : "Clears stored processing settings from \(vaultSettingsCount.formatted()) vault\(vaultSettingsCount == 1 ? "" : "s")."
+                ) {
+                    Button("Clear All Vault Settings", role: .destructive) {
+                        showingClearConfirmation = true
+                    }
+                    .buttonStyle(ChamferButtonStyle(.quiet))
+                    .disabled(vaultSettingsCount == 0)
                 }
-                .buttonStyle(ChamferButtonStyle(.quiet))
-                .disabled(vaultSettingsCount == 0)
-            }
 
-            InlineFact(
-                symbol: "checkmark.shield",
-                text: "Vault connections, model and provider settings, API keys, notes, snapshots, and history are never cleared by this action."
-            )
-
-            if let clearStatus {
-                let succeeded = clearStatus.hasPrefix("Vault settings cleared")
                 InlineFact(
-                    symbol: succeeded
-                        ? "checkmark.circle"
-                        : "exclamationmark.triangle",
-                    tint: succeeded
-                        ? Chamfer.Palette.positive
-                        : Chamfer.Palette.danger,
-                    text: clearStatus
+                    symbol: "checkmark.shield",
+                    text: "Vault connections, model and provider settings, API keys, notes, snapshots, and history are never cleared by this action."
                 )
+
+                if let clearStatus {
+                    let succeeded = clearStatus.hasPrefix("Vault settings cleared")
+                    InlineFact(
+                        symbol: succeeded
+                            ? "checkmark.circle"
+                            : "exclamationmark.triangle",
+                        tint: succeeded
+                            ? Chamfer.Palette.positive
+                            : Chamfer.Palette.danger,
+                        text: clearStatus
+                    )
+                }
             }
         }
     }
@@ -304,33 +304,6 @@ public struct SettingsView: View {
     }
 }
 
-// MARK: - Parts
-
-/// The section's own title, in the page voice.
-///
-/// Serif, because every heading in the app that sits on paper is serif — the
-/// Models page is no more a note than this window is, and it is set the same
-/// way. While this was `TypeScale.display` it was the only 26pt sans-serif
-/// title in the app, which is most of why the window read as bolted on.
-private struct SettingsHeading: View {
-    let title: String
-    let detail: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Chamfer.Space.tight) {
-            Text(title)
-                .font(Chamfer.TypeScale.pageHeading)
-                .tracking(-0.4)
-                .foregroundStyle(Chamfer.Palette.pageText)
-            Text(detail)
-                .font(Chamfer.TypeScale.pageSubtitle)
-                .foregroundStyle(Chamfer.Palette.pageTextSoft)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.bottom, Chamfer.Space.snug)
-    }
-}
-
 private struct SettingsTab: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @LegacyState private var isHovered = false
@@ -351,13 +324,25 @@ private struct SettingsTab: View {
                 isSelected ? Chamfer.Palette.textOnInk : Chamfer.Palette.textOnPaper
             )
             .padding(.horizontal, Chamfer.Space.regular)
-            .padding(.vertical, Chamfer.Space.snug - 1)
+            .frame(height: Chamfer.Control.compactFieldHeight)
             .background(isSelected ? Chamfer.Palette.ink : (isHovered ? Chamfer.Palette.hoverTint : .clear))
             .clipShape(Capsule())
             .chamferHoverRing(isHovered && !isSelected, radius: Chamfer.Radius.pill)
             .contentShape(Capsule())
+            .padding(
+                Chamfer.Control.hitPadding(
+                    for: Chamfer.Control.compactFieldHeight
+                )
+            )
+            .contentShape(Rectangle())
+            .padding(
+                -Chamfer.Control.hitPadding(
+                    for: Chamfer.Control.compactFieldHeight
+                )
+            )
         }
         .buttonStyle(.plain)
+        .chamferFocusable(radius: Chamfer.Radius.pill)
         .onHover { isHovered = $0 }
         .animation(
             Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),

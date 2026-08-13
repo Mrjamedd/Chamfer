@@ -1,50 +1,6 @@
 import ChamferCore
 import SwiftUI
 
-// MARK: - Card
-
-/// The one surface in the system: a pale beige card floating on deep beige
-/// canvas.
-///
-/// Hovering does not recolour it. It rises and its shadow deepens — the card
-/// stays beige throughout, so pointing at something never changes what it says.
-public struct Card<Content: View>: View {
-    @LegacyState private var isHovered = false
-
-    private let content: Content
-    private let padding: CGFloat
-    private let interactive: Bool
-
-    public init(
-        padding: CGFloat = Chamfer.Space.roomy,
-        interactive: Bool = true,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.padding = padding
-        self.interactive = interactive
-        self.content = content()
-    }
-
-    private var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous)
-    }
-
-    public var body: some View {
-        content
-            .padding(padding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Chamfer.Palette.paper)
-            .clipShape(shape)
-            .overlay(shape.strokeBorder(Chamfer.Palette.paperStroke, lineWidth: 1))
-            .chamferHoverRing(isHovered, radius: Chamfer.Radius.large)
-            .chamferHoverLift(isActive: isHovered)
-            .onHover { hovering in
-                guard interactive else { return }
-                isHovered = hovering
-            }
-    }
-}
-
 // MARK: - Pill
 
 public struct Pill: View {
@@ -99,15 +55,18 @@ public struct Pill: View {
 
 public struct ChamferButtonStyle: ButtonStyle {
     public enum Emphasis { case primary, secondary, quiet }
+    public enum Tone { case neutral, danger }
 
     private let emphasis: Emphasis
+    private let tone: Tone
 
-    public init(_ emphasis: Emphasis) {
+    public init(_ emphasis: Emphasis, tone: Tone = .neutral) {
         self.emphasis = emphasis
+        self.tone = tone
     }
 
     public func makeBody(configuration: Configuration) -> some View {
-        StyledLabel(configuration: configuration, emphasis: emphasis)
+        StyledLabel(configuration: configuration, emphasis: emphasis, tone: tone)
     }
 
     /// A nested view so the style can read the surface from the environment.
@@ -115,10 +74,10 @@ public struct ChamferButtonStyle: ButtonStyle {
     private struct StyledLabel: View {
         @Environment(\.chamferSurface) private var surface
         @LegacyState private var isHovered = false
-        @FocusState private var isFocused: Bool
 
         let configuration: Configuration
         let emphasis: Emphasis
+        let tone: Tone
 
         var body: some View {
             let shape = RoundedRectangle(
@@ -130,14 +89,14 @@ public struct ChamferButtonStyle: ButtonStyle {
                 .font(Chamfer.TypeScale.bodyStrong)
                 .foregroundStyle(foreground)
                 .padding(.horizontal, Chamfer.Space.regular)
-                .padding(.vertical, Chamfer.Space.snug - 1)
+                .frame(height: Chamfer.Control.compactFieldHeight)
                 .background {
                     shape
                         .fill(background)
                         .overlay {
                             shape
                                 .fill(Chamfer.Palette.hoverTint)
-                                .opacity(isHovered ? 1 : 0)
+                                .opacity(isHovered && !usesDangerHover ? 1 : 0)
                         }
                 }
                 .clipShape(shape)
@@ -149,10 +108,7 @@ public struct ChamferButtonStyle: ButtonStyle {
                 // keyboard gets its treatment here once rather than at ninety
                 // call sites. The system's own ring is switched off: it draws a
                 // blue rectangle that knows nothing about the shape underneath.
-                .focusable()
-                .focusEffectDisabled()
-                .focused($isFocused)
-                .chamferFocusRing(isFocused, radius: Chamfer.Radius.small)
+                .chamferFocusable(radius: Chamfer.Radius.small)
                 .onHover { isHovered = $0 }
                 // Dimming alone reads as the button being disabled rather than
                 // being pushed. The give under the pointer is what says the
@@ -163,10 +119,22 @@ public struct ChamferButtonStyle: ButtonStyle {
                 .opacity(configuration.isPressed ? 0.72 : 1)
                 .animation(Chamfer.Motion.quick, value: isHovered)
                 .animation(Chamfer.Motion.quick, value: configuration.isPressed)
+                .padding(
+                    Chamfer.Control.hitPadding(
+                        for: Chamfer.Control.compactFieldHeight
+                    )
+                )
+                .contentShape(Rectangle())
+                .padding(
+                    -Chamfer.Control.hitPadding(
+                        for: Chamfer.Control.compactFieldHeight
+                    )
+                )
         }
 
         private var foreground: Color {
-            switch emphasis {
+            if usesDangerHover { return surface.danger }
+            return switch emphasis {
             case .primary: surface == .ink ? Chamfer.Palette.ink : Chamfer.Palette.paper
             case .secondary: surface.textPrimary
             case .quiet: surface.textSecondary
@@ -174,7 +142,8 @@ public struct ChamferButtonStyle: ButtonStyle {
         }
 
         private var background: Color {
-            switch emphasis {
+            if usesDangerHover { return surface.dangerSoft }
+            return switch emphasis {
             case .primary: surface.accent
             case .secondary: surface.sunken
             case .quiet: .clear
@@ -188,20 +157,40 @@ public struct ChamferButtonStyle: ButtonStyle {
             case .quiet: .clear
             }
         }
+
+        /// Destructive quiet actions remain quiet at rest. The danger colour
+        /// appears only once the pointer has named the action, which separates
+        /// warning from decoration without making the row shout continuously.
+        private var usesDangerHover: Bool {
+            guard isHovered else { return false }
+            if case .danger = tone { return true }
+            return false
+        }
     }
 }
 
 // MARK: - Section header
 
+/// The app's one counted group heading. Pages exchange the compact card's
+/// deeper badge fill for paper's own sunken colour without changing the type,
+/// tracking, or capsule vocabulary.
 public struct SectionHeader: View {
-    @Environment(\.chamferSurface) private var surface
+    public enum Surface { case card, page }
+
+    @Environment(\.chamferSurface) private var surfaceMode
 
     private let title: String
     private let count: Int?
+    private let surface: Surface
 
-    public init(_ title: String, count: Int? = nil) {
+    public init(
+        _ title: String,
+        count: Int? = nil,
+        surface: Surface = .card
+    ) {
         self.title = title
         self.count = count
+        self.surface = surface
     }
 
     public var body: some View {
@@ -209,54 +198,39 @@ public struct SectionHeader: View {
             Text(title.uppercased())
                 .font(Chamfer.TypeScale.captionStrong)
                 .kerning(0.8)
-                .foregroundStyle(surface.textFaint)
+                .foregroundStyle(headerForeground)
             if let count {
                 Text("\(count)")
                     .font(Chamfer.TypeScale.captionStrong)
-                    .foregroundStyle(surface.textSecondary)
+                    .foregroundStyle(countForeground)
                     .padding(.horizontal, Chamfer.Space.tight + 1)
                     .padding(.vertical, 1)
-                    .background(Chamfer.Palette.canvasDeep)
+                    .background(countBackground)
                     .clipShape(Capsule())
             }
             Spacer()
         }
     }
-}
 
-// MARK: - Empty state
-
-public struct EmptyState: View {
-    @Environment(\.chamferSurface) private var surface
-
-    private let symbol: String
-    private let title: String
-    private let message: String
-
-    public init(symbol: String, title: String, message: String) {
-        self.symbol = symbol
-        self.title = title
-        self.message = message
+    private var headerForeground: Color {
+        switch surface {
+        case .card: surfaceMode.textFaint
+        case .page: Chamfer.Palette.pageTextSoft
+        }
     }
 
-    public var body: some View {
-        VStack(spacing: Chamfer.Space.regular) {
-            Image(systemName: symbol)
-                .font(.system(size: 26, weight: .light))
-                .foregroundStyle(surface.textFaint)
-            VStack(spacing: Chamfer.Space.tight) {
-                Text(title)
-                    .font(Chamfer.TypeScale.title)
-                    .foregroundStyle(surface.textPrimary)
-                Text(message)
-                    .font(Chamfer.TypeScale.body)
-                    .foregroundStyle(surface.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 340)
-            }
+    private var countForeground: Color {
+        switch surface {
+        case .card: surfaceMode.textSecondary
+        case .page: Chamfer.Palette.pageTextSoft
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, Chamfer.Space.loose)
+    }
+
+    private var countBackground: Color {
+        switch surface {
+        case .card: Chamfer.Palette.canvasDeep
+        case .page: Chamfer.Palette.paperSunken
+        }
     }
 }
 
@@ -347,5 +321,56 @@ public struct RunStateBanner: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(background)
         .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.medium, style: .continuous))
+    }
+}
+
+/// A tinted line of explanation inside a surface — enough shape and colour to
+/// be found without giving a local message the weight of a page-wide banner.
+public struct InlineNotice: View {
+    @Environment(\.chamferSurface) private var surface
+
+    public enum Tone { case accent, danger }
+
+    private let symbol: String
+    private let tone: Tone
+    private let text: String
+
+    public init(symbol: String, tone: Tone, text: String) {
+        self.symbol = symbol
+        self.tone = tone
+        self.text = text
+    }
+
+    public var body: some View {
+        HStack(alignment: .top, spacing: Chamfer.Space.snug) {
+            Image(systemName: symbol)
+                .font(.system(size: 11))
+                .foregroundStyle(tint)
+                .padding(.top, 1)
+            Text(text)
+                .font(Chamfer.TypeScale.caption)
+                .foregroundStyle(surface.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(Chamfer.Space.snug)
+        .background(background)
+        .clipShape(
+            RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
+        )
+    }
+
+    private var tint: Color {
+        switch tone {
+        case .accent: surface.accent
+        case .danger: surface.danger
+        }
+    }
+
+    private var background: Color {
+        switch tone {
+        case .accent: surface.accentSoft
+        case .danger: surface.dangerSoft
+        }
     }
 }

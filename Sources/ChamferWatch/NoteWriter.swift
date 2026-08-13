@@ -34,13 +34,35 @@ public struct NoteWriter: Sendable {
         expectedModification: Date?,
         expectedText: String? = nil
     ) -> RewriteFailure? {
+        switch replace(
+            text,
+            at: url,
+            expectedModification: expectedModification,
+            expectedText: expectedText
+        ) {
+        case .success:
+            nil
+        case let .failure(failure):
+            failure
+        }
+    }
+
+    /// Performs the guarded write and returns the exact text it replaced.
+    /// A restore needs that receipt for its own before-and-after history; the
+    /// ordinary write API deliberately keeps its smaller failure-only shape.
+    private func replace(
+        _ text: String,
+        at url: URL,
+        expectedModification: Date?,
+        expectedText: String? = nil
+    ) -> Result<String, RewriteFailure> {
         let manager = FileManager.default
 
         guard let attributes = try? manager.attributesOfItem(atPath: url.path) else {
-            return .vaultUnavailable
+            return .failure(.vaultUnavailable)
         }
         guard manager.isWritableFile(atPath: url.path) else {
-            return .filePermissionDenied
+            return .failure(.filePermissionDenied)
         }
 
         // Checked before the snapshot rather than after: a snapshot of text the
@@ -48,16 +70,16 @@ public struct NoteWriter: Sendable {
         if let expectedModification,
            let actual = attributes[.modificationDate] as? Date,
            actual.timeIntervalSince(expectedModification) > 1 {
-            return .fileChangedDuringProcessing
+            return .failure(.fileChangedDuringProcessing)
         }
 
         guard let previous = try? String(contentsOf: url, encoding: .utf8) else {
-            return .unsupportedEncoding
+            return .failure(.unsupportedEncoding)
         }
         // Some filesystems round modification dates coarsely. The bytes are
         // the final authority when the caller has already read them.
         if let expectedText, previous != expectedText {
-            return .fileChangedDuringProcessing
+            return .failure(.fileChangedDuringProcessing)
         }
 
         do {
@@ -66,16 +88,16 @@ public struct NoteWriter: Sendable {
             // No snapshot, so nothing is applied. The scope's rule that a
             // snapshot precedes every applied rewrite is this ordering, and it
             // is not a step that can be skipped when storage is full.
-            return .snapshotFailed(detail: error.localizedDescription)
+            return .failure(.snapshotFailed(detail: error.localizedDescription))
         }
 
         do {
             try Data(text.utf8).write(to: url, options: .atomic)
         } catch {
-            return .filePermissionDenied
+            return .failure(.filePermissionDenied)
         }
 
-        return nil
+        return .success(previous)
     }
 
     /// Puts an earlier version back.
@@ -87,7 +109,21 @@ public struct NoteWriter: Sendable {
         text: String,
         to url: URL
     ) -> RewriteFailure? {
-        write(text, to: url, expectedModification: nil)
+        switch restoreRecordingReplacement(text: text, to: url) {
+        case .success:
+            nil
+        case let .failure(failure):
+            failure
+        }
+    }
+
+    /// The same safe restore, with the receipt required by append-only
+    /// history. Returning it from the writer avoids a second, racy file read.
+    public func restoreRecordingReplacement(
+        text: String,
+        to url: URL
+    ) -> Result<String, RewriteFailure> {
+        replace(text, at: url, expectedModification: nil)
     }
 }
 

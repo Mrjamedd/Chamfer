@@ -51,7 +51,7 @@ private final class TracingRewriter: Rewriter, @unchecked Sendable {
 }
 
 @Test(.tags(.live))
-func traceOneNote() async throws {
+func liveModelTraceOneNote() async throws {
     OllamaEndpoint.shared.current = OllamaAPI.privateBaseURL
     let client = OllamaClient(baseURL: OllamaAPI.privateBaseURL)
     guard await client.isAvailable(),

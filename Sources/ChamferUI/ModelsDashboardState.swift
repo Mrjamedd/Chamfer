@@ -369,6 +369,9 @@ public struct ModelsSurfacePresentation: Equatable, Sendable {
     public let shadowRadius: CGFloat
     public let shadowY: CGFloat
     public let lift: CGFloat
+    public let neutralShadowOpacity: Double
+    public let neutralShadowRadius: CGFloat
+    public let neutralShadowY: CGFloat
 
     public init(
         paperOpacity: Double,
@@ -378,7 +381,10 @@ public struct ModelsSurfacePresentation: Equatable, Sendable {
         shadowOpacity: Double,
         shadowRadius: CGFloat,
         shadowY: CGFloat,
-        lift: CGFloat
+        lift: CGFloat,
+        neutralShadowOpacity: Double? = nil,
+        neutralShadowRadius: CGFloat = 8,
+        neutralShadowY: CGFloat = 4
     ) {
         self.paperOpacity = paperOpacity
         self.tintOpacity = tintOpacity
@@ -388,7 +394,27 @@ public struct ModelsSurfacePresentation: Equatable, Sendable {
         self.shadowRadius = shadowRadius
         self.shadowY = shadowY
         self.lift = lift
+        self.neutralShadowOpacity = neutralShadowOpacity ?? shadowOpacity * 0.5
+        self.neutralShadowRadius = neutralShadowRadius
+        self.neutralShadowY = neutralShadowY
     }
+
+    /// A modal panel has to remain distinct from the recessed page beneath it,
+    /// so its resting surface is stronger and deeper than an in-flow card. It
+    /// has no lift: this elevation is structural rather than a hover response.
+    public static let cloudPanel = ModelsSurfacePresentation(
+        paperOpacity: 0.96,
+        tintOpacity: 0.20,
+        secondaryTintOpacity: 0.10,
+        borderOpacity: 0.34,
+        shadowOpacity: 0.18,
+        shadowRadius: 30,
+        shadowY: 16,
+        lift: 0,
+        neutralShadowOpacity: 0.10,
+        neutralShadowRadius: 10,
+        neutralShadowY: 5
+    )
 }
 
 public enum ModelsSurfaceResponse {
@@ -669,6 +695,7 @@ public enum ModelsBloomResponse {
 public struct ModelsPageMetrics: Equatable, Sendable {
     public let horizontalPadding: CGFloat
     public let topPadding: CGFloat
+    public let headerBottomPadding: CGFloat
     public let columnGap: CGFloat
     public let rowGap: CGFloat
     public let primaryWidth: CGFloat
@@ -678,7 +705,23 @@ public struct ModelsPageMetrics: Equatable, Sendable {
     /// to something shorter than the composition wants.
     public let minimumRowHeight: CGFloat
     public let cloudHeight: CGFloat
+    public let footnoteTopPadding: CGFloat
+    public let bottomPadding: CGFloat
     public let isCompact: Bool
+
+    /// The ordinary composition's promised height. Progress and error states
+    /// may exceed it and use the page's scroll view; a resting page may not.
+    public var restingContentHeight: CGFloat {
+        topPadding
+            + (isCompact ? 82 : 92)
+            + headerBottomPadding
+            + minimumRowHeight
+            + rowGap
+            + cloudHeight
+            + footnoteTopPadding
+            + 14
+            + bottomPadding
+    }
 
     /// Below this the composition tightens: smaller title, tighter margins.
     static let compactHeightThreshold: CGFloat = 560
@@ -699,19 +742,33 @@ public struct ModelsPageMetrics: Equatable, Sendable {
         let configuration = min(244, max(196, (available - gap) * 0.355))
         let primary = available - gap - configuration
 
-        let topPadding: CGFloat = isCompact ? 26 : 34
-        let cloud: CGFloat = isCompact ? 88 : 96
-        let rowHeight = isCompact ? naturalRowHeight - 20 : naturalRowHeight
+        // The compact branch is the real 496-point page inside the minimum
+        // shipping window, not a slightly shorter version of the 716-point
+        // design canvas. These values leave room for every resting section;
+        // exceptional progress and error copy can still grow into scrolling.
+        let topPadding: CGFloat = isCompact ? Chamfer.Space.regular : 34
+        let headerBottom: CGFloat = isCompact ? Chamfer.Space.regular : 24
+        let rowGap: CGFloat = isCompact ? Chamfer.Space.regular : gap
+        let cloud: CGFloat = isCompact ? 72 : 96
+        // Both compact cards fit their resting content inside this floor. The
+        // spare height in the 496-point page belongs here rather than in empty
+        // margins, because progress and error copy grow from this row.
+        let rowHeight: CGFloat = isCompact ? 260 : naturalRowHeight
+        let footnoteTop: CGFloat = isCompact ? Chamfer.Space.snug : 16
+        let bottom: CGFloat = isCompact ? Chamfer.Space.snug : 26
 
         return ModelsPageMetrics(
             horizontalPadding: horizontal,
             topPadding: topPadding,
+            headerBottomPadding: headerBottom,
             columnGap: gap,
-            rowGap: gap,
+            rowGap: rowGap,
             primaryWidth: primary,
             configurationWidth: configuration,
             minimumRowHeight: rowHeight,
             cloudHeight: cloud,
+            footnoteTopPadding: footnoteTop,
+            bottomPadding: bottom,
             isCompact: isCompact
         )
     }

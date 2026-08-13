@@ -36,7 +36,7 @@ struct ChamferMenuPicker<Value: Hashable>: View {
                     .foregroundStyle(Chamfer.Palette.textOnPaperFaint)
             }
             .padding(.horizontal, Chamfer.Space.snug + 2)
-            .padding(.vertical, Chamfer.Space.tight + 2)
+            .frame(height: Chamfer.Control.compactFieldHeight)
             // A resting control rather than a word with a chevron after it.
             // On the inset surface these sit on, the lighter page colour is
             // what makes them read as something you can press.
@@ -51,10 +51,22 @@ struct ChamferMenuPicker<Value: Hashable>: View {
                     .strokeBorder(Chamfer.Palette.pageInsetStroke, lineWidth: 1)
             )
             .chamferHoverRing(isHovered, radius: Chamfer.Radius.small)
+            .padding(
+                Chamfer.Control.hitPadding(
+                    for: Chamfer.Control.compactFieldHeight
+                )
+            )
+            .contentShape(Rectangle())
+            .padding(
+                -Chamfer.Control.hitPadding(
+                    for: Chamfer.Control.compactFieldHeight
+                )
+            )
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .chamferFocusable(radius: Chamfer.Radius.small)
         .onHover { isHovered = $0 }
         .accessibilityLabel(label ?? "Choose")
         .accessibilityValue(currentTitle)
@@ -90,8 +102,26 @@ struct ChamferToggle: View {
                 .overlay(
                     Capsule().strokeBorder(Chamfer.Palette.paperStroke, lineWidth: isOn ? 0 : 1)
                 )
+                .padding(
+                    .horizontal,
+                    Chamfer.Control.hitPadding(for: 30)
+                )
+                .padding(
+                    .vertical,
+                    Chamfer.Control.hitPadding(for: 18)
+                )
+                .contentShape(Rectangle())
+                .padding(
+                    .horizontal,
+                    -Chamfer.Control.hitPadding(for: 30)
+                )
+                .padding(
+                    .vertical,
+                    -Chamfer.Control.hitPadding(for: 18)
+                )
         }
         .buttonStyle(.plain)
+        .chamferFocusable(radius: Chamfer.Radius.pill)
         .animation(
             Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
             value: isOn
@@ -155,66 +185,6 @@ struct SettingRow<Control: View>: View {
 }
 
 // MARK: - The vault's configuration
-
-/// A quiet editorial heading inside the configuration.
-///
-/// Small tracked capitals and a hairline, which is the app's existing vocabulary
-/// for dividing a page. Deliberately not a box: boxed groups are what a system
-/// settings pane looks like, and five of them stacked in a card would read as a
-/// form pasted into somebody else's app.
-private struct ConfigurationGroup<Content: View>: View {
-    let title: String
-    /// One line saying what the group is for, so the rows beneath it do not
-    /// each have to explain themselves. This is what stops the panel being a
-    /// long flat column of description.
-    let caption: String
-    /// A thin monochrome mark, small enough to be read as punctuation on the
-    /// heading rather than as an icon in its own right.
-    let symbol: String
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
-            VStack(alignment: .leading, spacing: Chamfer.Space.hair) {
-                HStack(spacing: Chamfer.Space.tight + 2) {
-                    Image(systemName: symbol)
-                        .font(.system(size: 10, weight: .light))
-                        .foregroundStyle(Chamfer.Palette.textOnPaperFaint)
-                        .frame(width: 12)
-                    Text(title.uppercased())
-                        .font(Chamfer.TypeScale.captionStrong)
-                        .kerning(0.8)
-                        .foregroundStyle(Chamfer.Palette.pageTextSoft)
-                }
-                Text(caption)
-                    .font(Chamfer.TypeScale.caption)
-                    .foregroundStyle(Chamfer.Palette.textOnPaperFaint)
-                    .fixedSize(horizontal: false, vertical: true)
-                    // Aligned under the title rather than the icon, so the
-                    // heading reads as one object with a mark in front of it.
-                    .padding(.leading, 12 + Chamfer.Space.tight + 2)
-            }
-
-            content
-        }
-        .padding(.horizontal, Chamfer.Space.regular)
-        .padding(.vertical, Chamfer.Space.regular)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // A region set into the page rather than a card laid on it. One shade,
-        // no border heavier than a hairline, and the same corner the rest of
-        // the app uses — enough to gather what is on it and no more.
-        .background(Chamfer.Palette.pageInset)
-        .clipShape(
-            RoundedRectangle(cornerRadius: Chamfer.Radius.medium, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Chamfer.Radius.medium, style: .continuous)
-                .strokeBorder(Chamfer.Palette.pageInsetStroke, lineWidth: 1)
-        )
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(title)
-    }
-}
 
 /// How one vault is rewritten.
 ///

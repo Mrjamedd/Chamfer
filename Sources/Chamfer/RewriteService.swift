@@ -395,10 +395,17 @@ final class RewriteService {
                         preferences: model.preferences
                     )
                 } else {
-                    notifications.automaticApplied(
-                        noteTitle: proposal.note.title,
-                        preferences: model.preferences
-                    )
+                    // `apply` files the entry at the front before returning.
+                    // Carrying that UUID in the notification means Undo names
+                    // this write exactly, even if other notes finish before
+                    // the user presses the action.
+                    if let historyEntryID = model.dashboard.history.first?.id {
+                        notifications.automaticApplied(
+                            noteTitle: proposal.note.title,
+                            historyEntryID: historyEntryID,
+                            preferences: model.preferences
+                        )
+                    }
                 }
             }
         }
@@ -432,9 +439,15 @@ final class RewriteService {
         text: String? = nil,
         allowOutdated: Bool = false
     ) -> RewriteFailure? {
-        guard model.dashboard.proposals.contains(where: {
+        guard let proposal = model.dashboard.proposals.first(where: {
             $0.id == proposal.id && $0.state == .pending
         }) else { return nil }
+
+        // An empty decision is still pending judgement, but it is not a write.
+        // Leaving the row in place lets the user restore a hunk or reject the
+        // rewrite outright without creating a snapshot and history entry whose
+        // before and after are identical.
+        guard proposal.changeCount > 0 else { return nil }
 
         guard let currentRead = readNote(proposal.note.url) else {
             notes.handleChange(NoteChange(url: proposal.note.url, detectedAt: Date()))
@@ -457,7 +470,17 @@ final class RewriteService {
         }
 
         let rewritten: String
-        if let proposed = text ?? proposal.proposedText {
+        if proposal.hasExcludedHunks {
+            // The exact candidate contains every offered hunk, including the
+            // ones the user unticked. Once selection is partial, the only
+            // faithful candidate is the one rebuilt from the kept hunks.
+            guard let replayed = TextDiff.apply(proposal.keptHunks, to: current.text)
+            else {
+                fail(proposal, with: .fileChangedDuringProcessing)
+                return .fileChangedDuringProcessing
+            }
+            rewritten = replayed
+        } else if let proposed = text ?? proposal.proposedText {
             if !allowOutdated, let base = proposal.baseText, base != current.text {
                 fail(proposal, with: .fileChangedDuringProcessing)
                 return .fileChangedDuringProcessing
@@ -520,8 +543,25 @@ final class RewriteService {
         model.flush()
     }
 
-    /// Undo: put the earlier text back, and snapshot what it replaces on the
-    /// way — undoing an undo has to work too.
+    func setHunkSelected(
+        _ proposal: Proposal,
+        hunkID: UUID,
+        selected: Bool
+    ) {
+        guard let index = model.dashboard.proposals.firstIndex(where: {
+            $0.id == proposal.id && $0.state.isActionable
+        }) else { return }
+        model.dashboard.proposals[index].setHunkSelected(
+            hunkID,
+            selected: selected
+        )
+        model.flush()
+    }
+
+    /// Undo: put the earlier text back, and record that write after the event
+    /// it undoes. Restore events stay actionable because their snapshots make
+    /// the inverse write a natural redo; actionability hides every event once
+    /// a later restore has consumed it, so Undo never points at a dead action.
     @discardableResult
     func restore(_ entry: HistoryEntry) -> RewriteFailure? {
         guard let entry = model.dashboard.history.first(where: { $0.id == entry.id }),
@@ -530,7 +570,14 @@ final class RewriteService {
             return .vaultUnavailable
         }
         let unsettled = notes.expectOwnWrite(to: entry.path)
-        if let failure = writer.restore(text: entry.previousText, to: entry.path) {
+        let replacedText: String
+        switch writer.restoreRecordingReplacement(
+            text: entry.previousText,
+            to: entry.path
+        ) {
+        case let .success(text):
+            replacedText = text
+        case let .failure(failure):
             notes.cancelExpectedOwnWrite(to: entry.path, restoring: unsettled)
             if failure == .vaultUnavailable {
                 notes.handleChange(NoteChange(url: entry.path, detectedAt: Date()))
@@ -540,24 +587,9 @@ final class RewriteService {
         }
         notes.finishExpectedOwnWrite(to: entry.path)
 
-        guard let index = model.dashboard.history.firstIndex(where: { $0.id == entry.id })
-        else { return nil }
-
-        model.dashboard.history[index] = HistoryEntry(
-            id: entry.id,
-            note: entry.note,
-            path: entry.path,
-            vaultID: entry.vaultID,
-            occurredAt: entry.occurredAt,
-            mode: entry.mode,
-            modelID: entry.modelID,
-            previousText: entry.previousText,
-            appliedText: entry.appliedText,
-            application: entry.application,
-            sourceWasOutdated: entry.sourceWasOutdated,
-            retryCount: entry.retryCount,
-            ruleIDs: entry.ruleIDs,
-            outcome: .reverted(at: Date())
+        model.dashboard.history.insert(
+            .restoration(of: entry, replacing: replacedText),
+            at: 0
         )
         notes.refreshAfterOwnWrite(entry.path)
         model.flush()

@@ -469,6 +469,26 @@ private func state(
 
 // MARK: - Hierarchy
 
+/// The configuration panel is modal over a recessed page, so it needs the
+/// shared card recipe at a stronger fixed resting presentation than the cloud
+/// strip beneath it. It still rests in place: modal elevation is not hover.
+@Test func theCloudPanelHasItsOwnElevatedRestingPresentation() {
+    let panel = ModelsSurfacePresentation.cloudPanel
+    let cloudCard = ModelsSurfaceResponse.presentation(
+        for: .cloud,
+        isActive: false,
+        isHovered: false
+    )
+
+    #expect(panel.paperOpacity > cloudCard.paperOpacity)
+    #expect(panel.tintOpacity > cloudCard.tintOpacity)
+    #expect(panel.borderOpacity > cloudCard.borderOpacity)
+    #expect(panel.shadowOpacity > cloudCard.shadowOpacity)
+    #expect(panel.shadowRadius > cloudCard.shadowRadius)
+    #expect(panel.neutralShadowOpacity > 0)
+    #expect(panel.lift == 0)
+}
+
 /// The whole redesign is in these numbers. Local carries a filled, shadowed
 /// surface; cloud carries a hairline. Hover moves within a path's band rather
 /// than across the gap between them, so cloud can never out-shout local by
@@ -629,6 +649,21 @@ private func state(
     #expect(short.topPadding < tall.topPadding)
     #expect(short.horizontalPadding < tall.horizontalPadding)
     #expect(short.cloudHeight <= tall.cloudHeight)
+}
+
+@Test func theRestingModelsCompositionFitsTheMinimumWindowHeight() {
+    // The dashboard reserves 52 points above the page and 92 below it for the
+    // collapsed bar and its breathing room, leaving this exact page height in
+    // the 640-point shipping window.
+    let pageSize = CGSize(
+        width: Chamfer.Window.width - Chamfer.Space.section * 2,
+        height: Chamfer.Window.minimumHeight - 144
+    )
+    let metrics = ModelsPageMetrics.metrics(for: pageSize)
+
+    #expect(pageSize.height == 496)
+    #expect(metrics.isCompact)
+    #expect(metrics.restingContentHeight <= pageSize.height)
 }
 
 /// The cloud panel's arrival is one number, and leaving is its exact inverse.

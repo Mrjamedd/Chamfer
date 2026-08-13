@@ -982,46 +982,13 @@ public struct HomeScreenView: View {
     /// included. An empty wall should look like a wall waiting for something,
     /// not like a page that failed to load.
     private var emptyWall: some View {
-        GeometryReader { geometry in
-            ZStack {
-                AmbientClusterGlow()
-                    .frame(
-                        width: geometry.size.width * 0.72,
-                        height: geometry.size.height * 0.66
-                    )
-                    .position(
-                        x: geometry.size.width * 0.52,
-                        y: geometry.size.height * 0.46
-                    )
-                    // Softer than the populated wall's. There is nothing on it
-                    // to light, so at full strength it read as a glow waiting
-                    // for something rather than as a backdrop.
-                    .opacity(hasEntered ? 0.55 : 0)
-                    .scaleEffect(hasEntered || reduceMotion ? 1 : 0.92)
-                    .animation(
-                        Chamfer.Motion.reduce(
-                            Chamfer.Motion.navigation,
-                            when: reduceMotion
-                        ),
-                        value: hasEntered
-                    )
-
-                EmptyWallCard(action: onConnectVault)
-                    .position(
-                        x: geometry.size.width * 0.52,
-                        y: geometry.size.height * 0.42
-                    )
-                    .opacity(hasEntered ? 1 : 0)
-                    .scaleEffect(hasEntered || reduceMotion ? 1 : 0.94)
-                    .animation(
-                        Chamfer.Motion.reduce(
-                            Chamfer.Motion.navigation.delay(0.04),
-                            when: reduceMotion
-                        ),
-                        value: hasEntered
-                    )
-            }
-        }
+        WaitingCardScene(
+            title: "A wall with nothing on it",
+            detail: "Point Chamfer at a folder of notes and they will gather here — the ones you are working on, and the ones it has tidied while you were elsewhere.",
+            footerLabel: onConnectVault == nil ? "NOTHING CONNECTED" : "CONNECT A VAULT",
+            action: onConnectVault,
+            isPresented: hasEntered
+        )
         .frame(minHeight: 260)
     }
 
@@ -1176,72 +1143,6 @@ private struct LiveClockGlyph: View {
     }
 }
 
-/// The warmth behind the wall.
-///
-/// Deliberately weak. At full strength it was the loudest thing on the page
-/// and the notes read as floating over a decorative background rather than
-/// resting on a surface — so it is now a suggestion of warmth, and the job of
-/// attaching each note to the page belongs to that note's own shadow.
-private struct AmbientClusterGlow: View {
-    var body: some View {
-        ZStack {
-            GlowField(
-                color: Color(red: 0.99, green: 0.25, blue: 0.55),
-                opacity: 0.20
-            )
-                .scaleEffect(x: 0.74, y: 0.78)
-                .offset(x: 20, y: -44)
-
-            GlowField(
-                color: Color(red: 1.00, green: 0.48, blue: 0.28),
-                opacity: 0.18
-            )
-                .scaleEffect(x: 1.04, y: 0.88)
-                .offset(x: -88, y: -14)
-
-            GlowField(
-                color: Color(red: 1.00, green: 0.64, blue: 0.16),
-                opacity: 0.14
-            )
-                .scaleEffect(x: 0.96, y: 0.76)
-                .offset(x: -56, y: 76)
-
-            GlowField(
-                color: Color(red: 1.00, green: 0.46, blue: 0.64),
-                opacity: 0.09
-            )
-                .scaleEffect(x: 0.62, y: 0.74)
-                .offset(x: 124, y: -6)
-        }
-            .compositingGroup()
-            .blur(radius: 72)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-    }
-}
-
-private struct GlowField: View {
-    let color: Color
-    let opacity: Double
-
-    var body: some View {
-        Ellipse()
-            .fill(
-                RadialGradient(
-                    stops: [
-                        .init(color: color, location: 0),
-                        .init(color: color.opacity(0.52), location: 0.42),
-                        .init(color: color.opacity(0), location: 1)
-                    ],
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: 260
-                )
-            )
-            .opacity(opacity)
-    }
-}
-
 private struct StickyNoteButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @LegacyState private var isHovered = false
@@ -1340,6 +1241,7 @@ private struct StickyNoteButton: View {
         }
         .buttonStyle(.plain)
         .frame(width: placement.size.width, height: placement.size.height)
+        .chamferFocusable(radius: 5)
         .background {
             TrackpadPanGesture(onEnded: onTrackpadSwipe)
         }
@@ -1362,100 +1264,7 @@ private struct StickyNoteButton: View {
     }
 }
 
-/// The one card on an empty wall.
-///
-/// Built from the same parts as a real note — the fill, the tape, the tilt, the
-/// serif title — so it reads as the first thing pinned up rather than as an
-/// error message wearing a card's clothes. It hangs slightly straighter than a
-/// real note, which is the only hint that it is not one.
-private struct EmptyWallCard: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @LegacyState private var isHovered = false
-
-    let action: (@MainActor () -> Void)?
-    /// Taped and turned like any other note. It is one card rather than six, so
-    /// nothing here is comparative — but a perfectly square, perfectly centred
-    /// note is exactly the impression the wall behind it is trying not to give.
-    private let hand = HomeNoteHand(id: "chamfer.empty-wall")
-
-    var body: some View {
-        Button {
-            Haptics.pop()
-            action?()
-        } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("A wall with nothing on it")
-                    .font(.system(size: 17, weight: .semibold, design: .serif))
-                    .foregroundStyle(Chamfer.Palette.pageText)
-                    .lineLimit(2)
-
-                Text("Point Chamfer at a folder of notes and they will gather here — the ones you are working on, and the ones it has tidied while you were elsewhere.")
-                    .font(.system(size: 11, weight: .regular, design: .serif))
-                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
-                    .lineSpacing(3)
-                    .lineLimit(5)
-                    .padding(.top, 8)
-
-                Spacer(minLength: 6)
-
-                Text(action == nil ? "NOTHING CONNECTED" : "CONNECT A VAULT")
-                    .font(.system(size: 8, weight: .medium))
-                    .tracking(0.6)
-                    .foregroundStyle(Chamfer.Palette.textOnPaperFaint)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.horizontal, 15)
-            .padding(.top, 20)
-            .padding(.bottom, 14)
-            .background(HomeNoteSlotPalette.fill(for: 0))
-            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .stroke(Chamfer.Palette.ink.opacity(0.07), lineWidth: 0.8)
-            }
-            // The empty wall is the first thing a new install shows, so this
-            // note is taped on the same way the others are rather than being
-            // the one perfectly centred strip on the page.
-            .overlay(alignment: .top) {
-                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                    .fill(Color.white.opacity(hand.tapeOpacity))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                            .stroke(Chamfer.Palette.ink.opacity(0.055), lineWidth: 0.6)
-                    }
-                    .frame(width: hand.tapeWidth, height: 9)
-                    .rotationEffect(.degrees(hand.tapeRotation))
-                    .offset(x: hand.tapeOffset.width, y: hand.tapeOffset.height)
-            }
-            .shadow(
-                color: Chamfer.Palette.ink.opacity(isHovered ? 0.24 : 0.19),
-                radius: isHovered ? 9 : 6,
-                x: 1,
-                y: isHovered ? 8 : 5
-            )
-        }
-        .buttonStyle(.plain)
-        .frame(width: 200, height: 176)
-        .disabled(action == nil)
-        // Straighter than a real note, and it straightens further under the
-        // pointer exactly as the others do.
-        .rotationEffect(
-            .degrees(isHovered && !reduceMotion ? hand.rotation * 0.3 : hand.rotation)
-        )
-        .scaleEffect(isHovered ? 1.018 : 1)
-        .offset(y: isHovered && !reduceMotion ? -5 : 0)
-        .onHover { isHovered = $0 && action != nil }
-        .animation(
-            Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
-            value: isHovered
-        )
-        .accessibilityLabel("Connect a vault")
-        .accessibilityHint("Choose a folder of Markdown or plain-text notes for Chamfer to watch")
-    }
-}
-
-private struct StickyNotePreview: View {
+struct StickyNotePreview: View {
     let card: HomeNoteCardModel
     let fill: Color
     /// Everything about this note that a person would have done slightly

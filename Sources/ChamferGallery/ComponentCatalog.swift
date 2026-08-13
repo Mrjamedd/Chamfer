@@ -9,8 +9,6 @@ struct ComponentCatalog: View {
     @LegacyState private var barIsSearching = false
 
     private let typical = Fixtures.state(for: .typical)
-    private let unreachable = Fixtures.state(for: .folderUnreachable)
-    private let huge = Fixtures.state(for: .hugeNote)
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -36,33 +34,6 @@ struct ComponentCatalog: View {
                         RunStateBanner(.failed(
                             message: "Couldn't write to “Meeting notes.md” — the file is read-only."
                         ))
-                    }
-                }
-                specimen("Proposal card — hover it") {
-                    if let proposal = typical.proposals.last {
-                        ProposalCard(proposal)
-                    }
-                }
-                specimen("Proposal card — long title, many changes") {
-                    if let proposal = huge.proposals.first {
-                        ProposalCard(proposal)
-                    }
-                }
-                specimen("Rows") {
-                    Card(padding: Chamfer.Space.regular) {
-                        VStack(spacing: Chamfer.Space.regular) {
-                            ForEach(unreachable.folders) { FolderRow($0) }
-                            ForEach(typical.recentlyCleaned) { CleanupRow($0) }
-                        }
-                    }
-                }
-                specimen("Empty state") {
-                    Card(interactive: false) {
-                        EmptyState(
-                            symbol: "checkmark.seal",
-                            title: "Nothing to review",
-                            message: "Your notes are tidy. Chamfer will queue anything it wants to rewrite here."
-                        )
                     }
                 }
             }

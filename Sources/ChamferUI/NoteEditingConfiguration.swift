@@ -80,7 +80,7 @@ public struct NoteEditingConfiguration {
     }
 }
 
-enum DashboardNoteDrafts {
+enum DashboardNoteDocuments {
     static func retain(_ document: NoteDocument, in state: inout DashboardState) {
         if state.openNote?.url == document.url {
             state.openNote = document

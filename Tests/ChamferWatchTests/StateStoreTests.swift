@@ -240,6 +240,29 @@ private func entry(_ title: String) -> HistoryEntry {
     #expect(loaded.failure == nil)
 }
 
+@Test func historyStoredBeforeActionsWereRecordedStillDecodes() throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = StateStore(directory: directory)
+
+    try store.save(history: [entry("Kickoff")])
+    let stored = try Data(contentsOf: store.historyURL)
+    var records = try #require(
+        JSONSerialization.jsonObject(with: stored) as? [[String: Any]]
+    )
+    records[0].removeValue(forKey: "action")
+    try JSONSerialization.data(withJSONObject: records)
+        .write(to: store.historyURL, options: .atomic)
+
+    let loaded = store.load()
+
+    #expect(loaded.failure == nil)
+    #expect(loaded.history.count == 1)
+    #expect(loaded.history[0].action == .rewrite)
+    #expect(loaded.history[0].previousText == "teh old text")
+    #expect(loaded.history[0].appliedText == "the old text")
+}
+
 @Test func historyIsWrittenSeparatelyFromSettings() throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

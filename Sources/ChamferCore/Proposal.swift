@@ -124,6 +124,11 @@ public struct Proposal: Sendable, Identifiable, Equatable, Codable {
     public let vaultID: UUID?
     public let retryCount: Int
     public let automaticReviewReason: RewriteReviewRecommendation?
+    /// The model's answer stays intact while the user's selection is staged.
+    /// Keeping exclusions beside the proposal, rather than deleting from
+    /// `hunks`, preserves exactly what was offered and makes every tick
+    /// reversible until the row itself is accepted or rejected.
+    public private(set) var excludedHunkIDs: Set<UUID>
     public var state: ProposalState
 
     public init(
@@ -139,6 +144,7 @@ public struct Proposal: Sendable, Identifiable, Equatable, Codable {
         vaultID: UUID? = nil,
         retryCount: Int = 0,
         automaticReviewReason: RewriteReviewRecommendation? = nil,
+        excludedHunkIDs: Set<UUID> = [],
         state: ProposalState = .pending
     ) {
         self.id = id
@@ -155,7 +161,55 @@ public struct Proposal: Sendable, Identifiable, Equatable, Codable {
         self.vaultID = vaultID
         self.retryCount = retryCount
         self.automaticReviewReason = automaticReviewReason
+        self.excludedHunkIDs = excludedHunkIDs
         self.state = state
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case note
+        case hunks
+        case baseText
+        case proposedText
+        case createdAt
+        case sourceModifiedAt
+        case mode
+        case modelID
+        case vaultID
+        case retryCount
+        case automaticReviewReason
+        // Keep the established wire name so pending queues written by the
+        // earlier interaction survive the vocabulary change without a
+        // migration that could lose a user's staged choices.
+        case excludedHunkIDs = "rejectedHunkIDs"
+        case state
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        note = try values.decode(NoteSummary.self, forKey: .note)
+        hunks = try values.decode([Hunk].self, forKey: .hunks)
+        baseText = try values.decodeIfPresent(String.self, forKey: .baseText)
+        proposedText = try values.decodeIfPresent(String.self, forKey: .proposedText)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        sourceModifiedAt = try values.decode(Date.self, forKey: .sourceModifiedAt)
+        mode = try values.decode(RewriteMode.self, forKey: .mode)
+        modelID = try values.decode(String.self, forKey: .modelID)
+        vaultID = try values.decodeIfPresent(UUID.self, forKey: .vaultID)
+        retryCount = try values.decode(Int.self, forKey: .retryCount)
+        automaticReviewReason = try values.decodeIfPresent(
+            RewriteReviewRecommendation.self,
+            forKey: .automaticReviewReason
+        )
+        // Queues written before per-change selection existed contain no key.
+        // Absence means every change starts selected, which keeps every old
+        // pending rewrite both decodable and fully actionable.
+        excludedHunkIDs = try values.decodeIfPresent(
+            Set<UUID>.self,
+            forKey: .excludedHunkIDs
+        ) ?? []
+        state = try values.decode(ProposalState.self, forKey: .state)
     }
 
     /// True when the file has changed since this rewrite was generated.
@@ -167,7 +221,24 @@ public struct Proposal: Sendable, Identifiable, Equatable, Codable {
         return currentModification > sourceModifiedAt
     }
 
-    public var changeCount: Int { hunks.count }
+    public var keptHunks: [Hunk] {
+        hunks.filter { !excludedHunkIDs.contains($0.id) }
+    }
+
+    public var changeCount: Int { keptHunks.count }
+
+    public var hasExcludedHunks: Bool {
+        hunks.contains { excludedHunkIDs.contains($0.id) }
+    }
+
+    public mutating func setHunkSelected(_ id: UUID, selected: Bool) {
+        guard hunks.contains(where: { $0.id == id }) else { return }
+        if selected {
+            excludedHunkIDs.remove(id)
+        } else {
+            excludedHunkIDs.insert(id)
+        }
+    }
 }
 
 /// A rule-pass write that already happened, kept so it can be reverted.

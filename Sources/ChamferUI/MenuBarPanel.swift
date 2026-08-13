@@ -4,6 +4,7 @@ import SwiftUI
 public struct MenuBarActions: Sendable {
     public var openMainWindow: @MainActor () -> Void
     public var openReview: @MainActor () -> Void
+    public var openNote: @MainActor (NoteSummary) -> Void
     public var openSettings: @MainActor () -> Void
     public var togglePause: @MainActor () -> Void
     public var quit: @MainActor () -> Void
@@ -11,16 +12,33 @@ public struct MenuBarActions: Sendable {
     public init(
         openMainWindow: @escaping @MainActor () -> Void = {},
         openReview: @escaping @MainActor () -> Void = {},
+        openNote: @escaping @MainActor (NoteSummary) -> Void = { _ in },
         openSettings: @escaping @MainActor () -> Void = {},
         togglePause: @escaping @MainActor () -> Void = {},
         quit: @escaping @MainActor () -> Void = {}
     ) {
         self.openMainWindow = openMainWindow
         self.openReview = openReview
+        self.openNote = openNote
         self.openSettings = openSettings
         self.togglePause = togglePause
         self.quit = quit
     }
+
+    @MainActor
+    func perform(_ selection: MenuBarSelection) {
+        switch selection {
+        case .pendingReview:
+            openReview()
+        case let .recentNote(note):
+            openNote(note)
+        }
+    }
+}
+
+enum MenuBarSelection: Sendable {
+    case pendingReview
+    case recentNote(NoteSummary)
 }
 
 /// What the menu bar shows.
@@ -101,8 +119,9 @@ public struct MenuBarPanel: View {
                                 symbol: "checkmark.circle",
                                 tint: Chamfer.Palette.brass,
                                 title: proposal.note.title,
-                                detail: "\(proposal.mode.title) · \(RelativeTime.string(proposal.createdAt, since: now))",
-                                isWarning: state.isOutdated(proposal)
+                                detail: pendingDetail(proposal),
+                                isWarning: state.isOutdated(proposal),
+                                action: { select(.pendingReview) }
                             )
                         }
                         if pending.count > Self.recentLimit {
@@ -117,20 +136,19 @@ public struct MenuBarPanel: View {
                     section(title: "Just done", count: nil) {
                         ForEach(recent) { entry in
                             PanelRow(
-                                symbol: entry.outcome.failure == nil ? "checkmark" : "exclamationmark.octagon.fill",
-                                tint: entry.outcome.failure == nil
-                                    ? Chamfer.Palette.positive
-                                    : Chamfer.Palette.danger,
+                                symbol: recentSymbol(for: entry),
+                                tint: recentTint(for: entry),
                                 title: entry.note.title,
-                                detail: "\(entry.ruleIDs.isEmpty ? entry.mode.title : "Rules") · \(RelativeTime.string(entry.occurredAt, since: now))",
-                                isWarning: false
+                                detail: "\(recentAction(for: entry)) · \(RelativeTime.string(entry.occurredAt, since: now))",
+                                isWarning: false,
+                                action: { select(.recentNote(entry.note)) }
                             )
                         }
                     }
                 }
             }
 
-            Divider().overlay(Chamfer.Palette.paperStroke)
+            PageRule()
             controls
         }
         .padding(Chamfer.Space.roomy)
@@ -158,6 +176,35 @@ public struct MenuBarPanel: View {
             Spacer(minLength: 0)
             RunStateBadge(state.runState)
         }
+    }
+
+    private func pendingDetail(_ proposal: Proposal) -> String {
+        let changes = proposal.changeCount == 1
+            ? "1 change"
+            : "\(proposal.changeCount) changes"
+        return "\(changes) · \(proposal.mode.title) · \(RelativeTime.string(proposal.createdAt, since: now))"
+    }
+
+    private func recentSymbol(for entry: HistoryEntry) -> String {
+        if entry.action.isRestore { return "arrow.uturn.backward" }
+        if case .reverted = entry.outcome { return "arrow.uturn.backward" }
+        return entry.outcome.failure == nil
+            ? "checkmark"
+            : "exclamationmark.octagon.fill"
+    }
+
+    private func recentTint(for entry: HistoryEntry) -> Color {
+        if entry.action.isRestore { return Chamfer.Palette.textOnPaperSoft }
+        if case .reverted = entry.outcome { return Chamfer.Palette.textOnPaperSoft }
+        return entry.outcome.failure == nil
+            ? Chamfer.Palette.positive
+            : Chamfer.Palette.danger
+    }
+
+    private func recentAction(for entry: HistoryEntry) -> String {
+        if entry.action.isRestore { return "Restored" }
+        if case .reverted = entry.outcome { return "Rewrite undone" }
+        return entry.ruleIDs.isEmpty ? "Rewrite applied" : "Rules applied"
     }
 
     @ViewBuilder
@@ -200,6 +247,10 @@ public struct MenuBarPanel: View {
                 Image(systemName: "gearshape")
             }
             .buttonStyle(ChamferButtonStyle(.quiet))
+            .frame(
+                width: Chamfer.Control.compactFieldHeight,
+                height: Chamfer.Control.compactFieldHeight
+            )
             .help("Chamfer Settings")
             .accessibilityLabel("Settings")
 
@@ -216,34 +267,85 @@ public struct MenuBarPanel: View {
         Haptics.commit()
         onDismiss()
     }
+
+    /// A row has finished being useful once its destination is open. Keeping
+    /// the panel over that destination would turn a successful click into an
+    /// apparent non-response, so selection and dismissal are one act.
+    private func select(_ selection: MenuBarSelection) {
+        Haptics.commit()
+        actions.perform(selection)
+        onDismiss()
+    }
 }
 
 private struct PanelRow: View {
+    @LegacyState private var isHovered = false
+
     let symbol: String
     let tint: Color
     let title: String
     let detail: String
     let isWarning: Bool
+    let action: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: Chamfer.Space.snug) {
-            Image(systemName: isWarning ? "clock.badge.exclamationmark" : symbol)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(isWarning ? Chamfer.Palette.brass : tint)
-                .frame(width: 14)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(Chamfer.TypeScale.bodyStrong)
-                    .foregroundStyle(Chamfer.Palette.textOnPaper)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(isWarning ? "\(detail) · source changed" : detail)
-                    .font(Chamfer.TypeScale.caption)
-                    .foregroundStyle(Chamfer.Palette.textOnPaperFaint)
-                    .lineLimit(1)
+        Button(action: action) {
+            HStack(alignment: .top, spacing: Chamfer.Space.snug) {
+                Image(systemName: isWarning ? "clock.badge.exclamationmark" : symbol)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(isWarning ? Chamfer.Palette.brass : tint)
+                    .frame(width: 14)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(Chamfer.TypeScale.bodyStrong)
+                        .foregroundStyle(Chamfer.Palette.textOnPaper)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(presentedDetail)
+                        .font(Chamfer.TypeScale.caption)
+                        .foregroundStyle(Chamfer.Palette.textOnPaperFaint)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .padding(.horizontal, Chamfer.Space.snug)
+            .frame(minHeight: Chamfer.Control.compactFieldHeight)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isHovered ? Chamfer.Palette.hoverTint : .clear)
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: Chamfer.Radius.small - 2,
+                    style: .continuous
+                )
+            )
+            .chamferHoverRing(
+                isHovered,
+                radius: Chamfer.Radius.small - 2
+            )
+            .contentShape(Rectangle())
+            .padding(
+                .vertical,
+                Chamfer.Control.hitPadding(
+                    for: Chamfer.Control.compactFieldHeight
+                )
+            )
+            .contentShape(Rectangle())
+            .padding(
+                .vertical,
+                -Chamfer.Control.hitPadding(
+                    for: Chamfer.Control.compactFieldHeight
+                )
+            )
         }
+        .buttonStyle(.plain)
+        .chamferFocusable(radius: Chamfer.Radius.small - 2)
+        .onHover { isHovered = $0 }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title), \(presentedDetail)")
+    }
+
+    private var presentedDetail: String {
+        isWarning ? "\(detail) · source changed" : detail
     }
 }

@@ -24,31 +24,44 @@ final class AppUpdates {
 
     /// Nil when this build has no feed — a `swift build` run from the source
     /// directory, or any bundle assembled without the release keys.
-    private let controller: SPUStandardUpdaterController?
+    private let updater: SPUUpdater?
+    /// Kept alongside the updater because the custom interface owns pending
+    /// reply blocks whose lifetime is the update session, not a SwiftUI view.
+    private let userDriver: AppUpdateUserDriver?
 
-    private init() {
-        let feed = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String
-        let key = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String
-        guard let feed, !feed.isEmpty, let key, !key.isEmpty else {
-            controller = nil
+    init(bundle: Bundle = .main) {
+        guard AppUpdateConfiguration(infoDictionary: bundle.infoDictionary) != nil else {
+            updater = nil
+            userDriver = nil
             return
         }
-        // `startingUpdater: true` schedules the background check Sparkle is
-        // configured for in Info.plist. The first run asks permission; there is
-        // no version of this that checks silently before being allowed to.
-        controller = SPUStandardUpdaterController(
-            startingUpdater: true,
-            updaterDelegate: nil,
-            userDriverDelegate: nil
+        let driver = AppUpdateUserDriver(bundle: bundle)
+        let candidate = SPUUpdater(
+            hostBundle: bundle,
+            applicationBundle: bundle,
+            userDriver: driver,
+            delegate: nil
         )
+        do {
+            // Starting directly preserves Sparkle's configured scheduler and
+            // permission cycle. Only the object answering its UI callbacks has
+            // changed; the feed, validation, and installer remain Sparkle's.
+            try candidate.start()
+            updater = candidate
+            userDriver = driver
+        } catch {
+            updater = nil
+            userDriver = driver
+            driver.showStartupFailure(error)
+        }
     }
 
     /// Whether this build can update itself at all. The menu item reflects it
     /// rather than offering a check that cannot happen.
-    var isAvailable: Bool { controller != nil }
+    var isAvailable: Bool { updater != nil }
 
     func checkForUpdates() {
-        controller?.updater.checkForUpdates()
+        updater?.checkForUpdates()
     }
 
     /// What the About/Help surfaces show, and what a bug report needs.

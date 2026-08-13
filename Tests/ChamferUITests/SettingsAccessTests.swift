@@ -1,6 +1,7 @@
 import ChamferCore
 import ChamferFixtures
 import CoreGraphics
+import Foundation
 import Testing
 @testable import ChamferUI
 
@@ -82,6 +83,39 @@ import Testing
     actions.openSettings()
 
     #expect(opened)
+}
+
+/// Pending work and completed work look like peers in the panel, but selecting
+/// them has two distinct destinations: Review for a decision, the note for a
+/// result that has already landed.
+@MainActor
+@Test func menuBarRowsRouteToReviewOrTheirNote() {
+    let note = NoteSummary(
+        url: URL(fileURLWithPath: "/tmp/Menu bar note.md"),
+        title: "Menu bar note",
+        wordCount: 42,
+        modifiedAt: Date(timeIntervalSince1970: 100)
+    )
+    var reviewOpenCount = 0
+    var openedNote: NoteSummary?
+    let actions = MenuBarActions(
+        openReview: { reviewOpenCount += 1 },
+        openNote: { openedNote = $0 }
+    )
+
+    actions.perform(.pendingReview)
+    #expect(reviewOpenCount == 1)
+    #expect(openedNote == nil)
+
+    actions.perform(.recentNote(note))
+    #expect(reviewOpenCount == 1)
+    #expect(openedNote == note)
+}
+
+/// A sheet can afford to arrive as a readable object, while dismissal should
+/// answer the decision and clear the page sooner.
+@Test func sheetsLeaveFasterThanTheyArrive() {
+    #expect(Chamfer.Motion.sheetDepartureDuration < Chamfer.Motion.sheetArrivalDuration)
 }
 
 @MainActor

@@ -52,6 +52,20 @@ import Testing
     #expect(WelcomeFlow.isLast(index: last + 3))
 }
 
+/// The dots are navigation rather than progress decoration, so choosing an
+/// earlier one has to undo the spatial handoff as well as changing the words.
+@Test func welcomeSlideHandoffFollowsTheChosenStep() {
+    #expect(
+        WelcomeFlow.transitionDirection(fromIndex: 0, toIndex: 2) == .forward
+    )
+    #expect(
+        WelcomeFlow.transitionDirection(fromIndex: 3, toIndex: 1) == .backward
+    )
+    #expect(
+        WelcomeFlow.transitionDirection(fromIndex: 2, toIndex: 2) == .stationary
+    )
+}
+
 /// The welcome makes promises the app has to keep, so the promises are checked
 /// rather than left to whoever edits the copy next.
 @Test func everySlideSaysSomethingConcreteAndNothingUntrue() {

@@ -290,19 +290,25 @@ public enum BottomBarContentMotion {
         return .stationary
     }
 
-    public static func outgoingOffset(for direction: Direction) -> CGFloat {
+    public static func outgoingOffset(
+        for direction: Direction,
+        distance: CGFloat = 2
+    ) -> CGFloat {
         switch direction {
         case .forward:
-            -2
+            -distance
         case .backward:
-            2
+            distance
         case .stationary:
             0
         }
     }
 
-    public static func incomingOffset(for direction: Direction) -> CGFloat {
-        -outgoingOffset(for: direction)
+    public static func incomingOffset(
+        for direction: Direction,
+        distance: CGFloat = 2
+    ) -> CGFloat {
+        -outgoingOffset(for: direction, distance: distance)
     }
 }
 
@@ -584,7 +590,7 @@ public struct BottomBar: View {
             .barSurface(radius: surfaceRadius)
             .chamferRing(
                 radius: surfaceRadius,
-                color: Chamfer.Palette.barRing
+                color: Chamfer.Palette.structuralRing
             )
             .scaleEffect(slabScale, anchor: .bottom)
 
@@ -966,12 +972,22 @@ public struct BottomBar: View {
             .opacity(isSplit ? 1 : 0)
             .overlay(
                 Circle()
-                    .strokeBorder(Chamfer.Palette.barRing, lineWidth: Chamfer.Palette.ringWidth)
+                    .strokeBorder(
+                        Chamfer.Palette.structuralRing,
+                        lineWidth: Chamfer.Palette.ringWidth
+                    )
                     .opacity(isSplit ? 1 : 0)
                     .allowsHitTesting(false)
             )
             .chamferHoverRingCircle(closeHovered)
-            .contentShape(Circle())
+            .padding(
+                Chamfer.Control.hitPadding(for: Self.collapsedHeight)
+            )
+            .contentShape(Rectangle())
+            .padding(
+                -Chamfer.Control.hitPadding(for: Self.collapsedHeight)
+            )
+            .chamferFocusableCircle(isSplit)
             .onHover { inside in
                 guard isSplit else { return }
                 withAnimation(Chamfer.Motion.quick) { closeHovered = inside }
@@ -980,6 +996,14 @@ public struct BottomBar: View {
             // the first click on a button is spent moving first responder
             // instead of activating it, which is why it took two.
             .onTapGesture { endSearch() }
+            .onKeyPress(.return) {
+                endSearch()
+                return .handled
+            }
+            .onKeyPress(.space) {
+                endSearch()
+                return .handled
+            }
             .allowsHitTesting(isSplit)
     }
 
@@ -1402,8 +1426,12 @@ public struct BottomBar: View {
                 )
                 .chamferHoverRing(isHovered, radius: Chamfer.Radius.small - 2)
                 .contentShape(Rectangle())
+                .padding(.vertical, Chamfer.Control.hitPadding(for: 20))
+                .contentShape(Rectangle())
+                .padding(.vertical, -Chamfer.Control.hitPadding(for: 20))
             }
             .buttonStyle(.plain)
+            .chamferFocusable(radius: Chamfer.Radius.small - 2)
             .onHover { isHovered = $0 }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(entry.title), \(entry.detail)")
@@ -1436,8 +1464,12 @@ public struct BottomBar: View {
                 .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small - 2, style: .continuous))
                 .chamferHoverRing(isHovered, radius: Chamfer.Radius.small - 2)
                 .contentShape(Rectangle())
+                .padding(.vertical, Chamfer.Control.hitPadding(for: 20))
+                .contentShape(Rectangle())
+                .padding(.vertical, -Chamfer.Control.hitPadding(for: 20))
             }
             .buttonStyle(.plain)
+            .chamferFocusable(radius: Chamfer.Radius.small - 2)
             .onHover { isHovered = $0 }
         }
     }
@@ -1468,8 +1500,12 @@ public struct BottomBar: View {
                 .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small - 2, style: .continuous))
                 .chamferHoverRing(isHovered, radius: Chamfer.Radius.small - 2)
                 .contentShape(Rectangle())
+                .padding(.vertical, Chamfer.Control.hitPadding(for: 20))
+                .contentShape(Rectangle())
+                .padding(.vertical, -Chamfer.Control.hitPadding(for: 20))
             }
             .buttonStyle(.plain)
+            .chamferFocusable(radius: Chamfer.Radius.small - 2)
             .onHover { isHovered = $0 }
         }
     }
@@ -1497,8 +1533,18 @@ public struct BottomBar: View {
                 .frame(height: BottomBar.searchResultHeight)
                 .background(isHovered ? Chamfer.Palette.hoverTint : .clear)
                 .contentShape(Rectangle())
+                .padding(
+                    .vertical,
+                    Chamfer.Control.hitPadding(for: BottomBar.searchResultHeight)
+                )
+                .contentShape(Rectangle())
+                .padding(
+                    .vertical,
+                    -Chamfer.Control.hitPadding(for: BottomBar.searchResultHeight)
+                )
             }
             .buttonStyle(.plain)
+            .chamferFocusable(radius: Chamfer.Radius.small)
             .onHover { isHovered = $0 }
         }
     }
@@ -1808,6 +1854,7 @@ public struct FloatingCloseButton: View {
                 .padding(-6)
         }
         .buttonStyle(.plain)
+        .chamferFocusableCircle()
         .chamferHoverRingCircle(isHovered)
         .chamferFloat(radius: 14, y: 6, opacity: 0.18)
         .onHover { inside in

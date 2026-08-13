@@ -78,6 +78,26 @@ private func reviewItem(_ proposals: [Proposal]) -> BottomBar.Item? {
     #expect(item?.entries.count == 3)
 }
 
+@Test func reviewEntryCountsOnlyChangesStillKeptForAcceptance() {
+    let hunks = [
+        Hunk(before: "teh first", after: "the first", startLine: 1),
+        Hunk(before: "teh second", after: "the second", startLine: 3)
+    ]
+    var partial = Proposal(
+        note: NoteSummary(
+            url: URL(filePath: "/Vault/Partial.md"),
+            title: "Partial",
+            wordCount: 4,
+            modifiedAt: clock
+        ),
+        hunks: hunks,
+        createdAt: clock
+    )
+    partial.setHunkSelected(hunks[1].id, selected: false)
+
+    #expect(reviewItem([partial])?.entries.first?.detail == "1 change")
+}
+
 @Test func theOtherDestinationsDoNotCountAnything() {
     let items = DashboardBottomBarItems.make(for: state([proposal("One")]))
 

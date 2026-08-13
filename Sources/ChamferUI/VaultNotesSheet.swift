@@ -85,6 +85,7 @@ struct VaultNotesSheet: View {
             .clipShape(
                 RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous)
             )
+            .chamferRing(radius: Chamfer.Radius.large)
             .chamferFloat()
             .transition(sheetTransition)
         }
@@ -168,6 +169,7 @@ private struct NoteChoiceRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .chamferFocusable(radius: Chamfer.Radius.small)
         .onHover { isHovered = $0 }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(note.title), \(detail)")

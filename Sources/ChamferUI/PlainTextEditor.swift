@@ -43,27 +43,13 @@ struct PlainTextEditor: NSViewRepresentable {
         )
         textView.textContainer?.widthTracksTextView = true
 
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 7
-        let font = Self.editorFont
-        let textColor = NSColor(
-            srgbRed: 20 / 255,
-            green: 17 / 255,
-            blue: 14 / 255,
-            alpha: 1
-        )
-        textView.font = font
-        textView.textColor = textColor
-        textView.defaultParagraphStyle = paragraphStyle
-        textView.typingAttributes = [
-            .font: font,
-            .foregroundColor: textColor,
-            .paragraphStyle: paragraphStyle
-        ]
-        textView.textStorage?.setAttributes(
-            textView.typingAttributes,
-            range: NSRange(location: 0, length: textView.string.utf16.count)
-        )
+        textView.font = NoteTextStyle.bodyFont
+        textView.textColor = NoteTextStyle.bodyColor
+        textView.defaultParagraphStyle = NoteTextStyle.paragraphStyle
+        textView.typingAttributes = NoteTextStyle.bodyAttributes
+        if let storage = textView.textStorage {
+            NoteTextStyle.apply(to: storage)
+        }
 
         scrollView.documentView = textView
         return scrollView
@@ -77,33 +63,178 @@ struct PlainTextEditor: NSViewRepresentable {
 
         let selection = textView.selectedRange()
         textView.string = text
+        textView.typingAttributes = NoteTextStyle.bodyAttributes
+        if let storage = textView.textStorage {
+            // An external replacement can alter any paragraph. Interactive
+            // typing takes the narrower path in the coordinator below.
+            NoteTextStyle.apply(to: storage)
+        }
+        let location = min(selection.location, text.utf16.count)
         textView.setSelectedRange(
             NSRange(
-                location: min(selection.location, text.utf16.count),
-                length: 0
+                location: location,
+                length: min(selection.length, text.utf16.count - location)
             )
         )
-    }
-
-    private static var editorFont: NSFont {
-        let system = NSFont.systemFont(ofSize: 17)
-        guard let descriptor = system.fontDescriptor.withDesign(.serif),
-              let serif = NSFont(descriptor: descriptor, size: 17)
-        else { return system }
-        return serif
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
+        private var pendingEditedRange: NSRange?
 
         init(text: Binding<String>) {
             self.text = text
         }
 
+        func textView(
+            _ textView: NSTextView,
+            shouldChangeTextIn affectedCharRange: NSRange,
+            replacementString: String?
+        ) -> Bool {
+            // TextKit reports the pre-edit range here. Retaining the insertion
+            // point and replacement length is enough to recover the changed
+            // paragraph after the edit, including a paragraph newly split or
+            // joined by a newline.
+            pendingEditedRange = NSRange(
+                location: affectedCharRange.location,
+                length: replacementString?.utf16.count ?? 0
+            )
+            return true
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            let selection = textView.selectedRange()
+            if let storage = textView.textStorage {
+                // A whole-document attribute pass on every keystroke is linear
+                // in the note's length. Keeping this to the edited paragraph
+                // and the paragraph a new separator may create makes the cost
+                // follow what changed instead, while full replacements are
+                // still normalized in `updateNSView`.
+                NoteTextStyle.apply(
+                    to: storage,
+                    editedRange: pendingEditedRange ?? selection
+                )
+                textView.typingAttributes = NoteTextStyle.bodyAttributes
+                textView.setSelectedRange(selection)
+            }
+            pendingEditedRange = nil
             text.wrappedValue = textView.string
         }
+    }
+}
+
+@MainActor
+private enum NoteTextStyle {
+    static let bodyFont = Chamfer.TypeScale.pageBodyNSFont
+    static let bodyColor = NSColor(Chamfer.Palette.pageText)
+    static let markerColor = NSColor(Chamfer.Palette.textOnPaperFaint)
+
+    static let paragraphStyle: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 7
+        return style
+    }()
+
+    static var bodyAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: bodyFont,
+            .foregroundColor: bodyColor,
+            .paragraphStyle: paragraphStyle
+        ]
+    }
+
+    static func apply(
+        to storage: NSTextStorage,
+        editedRange: NSRange? = nil
+    ) {
+        guard storage.length > 0 else { return }
+
+        let string = storage.string as NSString
+        let range = paragraphRange(
+            in: string,
+            around: editedRange ?? NSRange(location: 0, length: storage.length)
+        )
+
+        storage.beginEditing()
+        storage.setAttributes(bodyAttributes, range: range)
+
+        var cursor = range.location
+        while cursor < NSMaxRange(range) {
+            var paragraphStart = 0
+            var paragraphEnd = 0
+            var contentsEnd = 0
+            string.getParagraphStart(
+                &paragraphStart,
+                end: &paragraphEnd,
+                contentsEnd: &contentsEnd,
+                for: NSRange(location: cursor, length: 0)
+            )
+
+            let contents = NSRange(
+                location: paragraphStart,
+                length: contentsEnd - paragraphStart
+            )
+            if let level = headingLevel(in: string, contents: contents) {
+                storage.addAttribute(
+                    .font,
+                    value: Chamfer.TypeScale.noteHeadingNSFont(level: level),
+                    range: contents
+                )
+                storage.addAttribute(
+                    .foregroundColor,
+                    value: markerColor,
+                    range: NSRange(location: paragraphStart, length: level)
+                )
+            }
+
+            cursor = max(paragraphEnd, cursor + 1)
+        }
+
+        storage.endEditing()
+    }
+
+    private static func paragraphRange(
+        in string: NSString,
+        around editedRange: NSRange
+    ) -> NSRange {
+        let location = min(editedRange.location, string.length)
+        let availableLength = string.length - location
+        let length = min(editedRange.length, availableLength)
+        let trailingLength = location + length < string.length ? 1 : 0
+        return string.paragraphRange(
+            // The separator belongs to the paragraph before it. Looking one
+            // character beyond the edit also reaches the paragraph created by
+            // an inserted newline, without widening ordinary edits beyond the
+            // paragraph they already occupy.
+            for: NSRange(
+                location: location,
+                length: length + trailingLength
+            )
+        )
+    }
+
+    private static func headingLevel(
+        in string: NSString,
+        contents: NSRange
+    ) -> Int? {
+        guard contents.length > 0 else { return nil }
+
+        var level = 0
+        while level < min(3, contents.length),
+              string.character(at: contents.location + level) == 0x23
+        {
+            level += 1
+        }
+        guard level > 0 else { return nil }
+
+        let next = contents.location + level
+        guard next == NSMaxRange(contents)
+                || string.character(at: next) == 0x20
+                || string.character(at: next) == 0x09
+        else { return nil }
+
+        return level
     }
 }

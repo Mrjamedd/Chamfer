@@ -3,7 +3,8 @@ import Foundation
 /// Review and History as one page.
 ///
 /// They are the same sequence of events in two tenses — rewrites that have not
-/// been judged, and rewrites that have. Keeping them apart would put the same
+/// been judged, then every rewrite and restore that happened. Keeping them
+/// apart would put the same
 /// note in two places and make "what happened to this note" a question you
 /// answer by remembering which tab you were in. So: pending at the top,
 /// grouped by vault as the scope requires, then everything that has already

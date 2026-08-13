@@ -1,8 +1,15 @@
 import SwiftUI
 
+public enum ChamferFocusShape: Sendable {
+    case roundedRectangle(radius: CGFloat)
+    case circle
+}
+
 /// The hover treatment, shared by anything that can be pointed at: the surface
 /// rises off the canvas and its shadow deepens. Nothing recolours.
 public struct HoverLift: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     private let isActive: Bool
     private let lift: CGFloat
 
@@ -19,7 +26,10 @@ public struct HoverLift: ViewModifier {
                 radius: isActive ? 22 : 7,
                 y: isActive ? 14 : 3
             )
-            .animation(Chamfer.Motion.lift, value: isActive)
+            .animation(
+                Chamfer.Motion.reduce(Chamfer.Motion.lift, when: reduceMotion),
+                value: isActive
+            )
     }
 }
 
@@ -84,7 +94,17 @@ public extension View {
     /// keying off `isFocused` alone put a ring on Settings' first button before
     /// anyone had pressed a key — a stuck selection rather than a focus state.
     func chamferFocusRing(_ isFocused: Bool, radius: CGFloat) -> some View {
-        modifier(FocusRing(isFocused: isFocused, radius: radius))
+        modifier(
+            FocusRing(
+                isFocused: isFocused,
+                shape: .roundedRectangle(radius: radius)
+            )
+        )
+    }
+
+    /// The same keyboard treatment, following the edge of a circular control.
+    func chamferFocusRingCircle(_ isFocused: Bool) -> some View {
+        modifier(FocusRing(isFocused: isFocused, shape: .circle))
     }
 }
 
@@ -92,28 +112,41 @@ public extension View {
 /// without every call site knowing that state exists.
 public struct FocusRing: ViewModifier {
     private let isFocused: Bool
-    private let radius: CGFloat
+    private let shape: ChamferFocusShape
 
     @LegacyState private var navigation = KeyboardNavigation.shared
 
-    public init(isFocused: Bool, radius: CGFloat) {
+    public init(isFocused: Bool, shape: ChamferFocusShape) {
         self.isFocused = isFocused
-        self.radius = radius
+        self.shape = shape
     }
 
     private var isVisible: Bool { isFocused && navigation.isActive }
 
     public func body(content: Content) -> some View {
         content
-            .overlay(
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(
-                        Chamfer.Palette.focusRing.opacity(isVisible ? 1 : 0),
-                        lineWidth: Chamfer.Palette.focusRingWidth
-                    )
-                    .allowsHitTesting(false)
-            )
+            .overlay { ring }
             .animation(Chamfer.Motion.quick, value: isVisible)
+    }
+
+    @ViewBuilder
+    private var ring: some View {
+        switch shape {
+        case let .roundedRectangle(radius):
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(
+                    Chamfer.Palette.focusRing.opacity(isVisible ? 1 : 0),
+                    lineWidth: Chamfer.Palette.focusRingWidth
+                )
+                .allowsHitTesting(false)
+        case .circle:
+            Circle()
+                .strokeBorder(
+                    Chamfer.Palette.focusRing.opacity(isVisible ? 1 : 0),
+                    lineWidth: Chamfer.Palette.focusRingWidth
+                )
+                .allowsHitTesting(false)
+        }
     }
 }
 
@@ -122,18 +155,28 @@ public struct FocusRing: ViewModifier {
 public struct ChamferFocusable: ViewModifier {
     @FocusState private var isFocused: Bool
 
-    private let radius: CGFloat
+    private let shape: ChamferFocusShape
+    private let isEnabled: Bool
 
-    public init(radius: CGFloat = Chamfer.Radius.small) {
-        self.radius = radius
+    public init(
+        radius: CGFloat = Chamfer.Radius.small,
+        isEnabled: Bool = true
+    ) {
+        self.shape = .roundedRectangle(radius: radius)
+        self.isEnabled = isEnabled
+    }
+
+    public init(shape: ChamferFocusShape, isEnabled: Bool = true) {
+        self.shape = shape
+        self.isEnabled = isEnabled
     }
 
     public func body(content: Content) -> some View {
         content
-            .focusable()
+            .focusable(isEnabled)
             .focusEffectDisabled()
             .focused($isFocused)
-            .chamferFocusRing(isFocused, radius: radius)
+            .modifier(FocusRing(isFocused: isFocused, shape: shape))
     }
 }
 
@@ -145,5 +188,35 @@ public extension View {
     /// selection artefact rather than a focus state.
     func chamferFocusable(radius: CGFloat = Chamfer.Radius.small) -> some View {
         modifier(ChamferFocusable(radius: radius))
+    }
+
+    /// Focusable, with a ring that follows a circular control rather than
+    /// enclosing it in a rounded rectangle.
+    func chamferFocusableCircle(_ isEnabled: Bool = true) -> some View {
+        modifier(ChamferFocusable(shape: .circle, isEnabled: isEnabled))
+    }
+
+    /// The programmatic form is reserved for dismissal triggers. The modifier
+    /// still owns the focus appearance; its caller only names where focus must
+    /// return once the transient surface is gone.
+    func chamferFocusable<Value: Hashable>(
+        radius: CGFloat = Chamfer.Radius.small,
+        focused binding: FocusState<Value>.Binding,
+        equals value: Value
+    ) -> some View {
+        focusable()
+            .focusEffectDisabled()
+            .focused(binding, equals: value)
+            .chamferFocusRing(binding.wrappedValue == value, radius: radius)
+    }
+
+    func chamferFocusableCircle<Value: Hashable>(
+        focused binding: FocusState<Value>.Binding,
+        equals value: Value
+    ) -> some View {
+        focusable()
+            .focusEffectDisabled()
+            .focused(binding, equals: value)
+            .chamferFocusRingCircle(binding.wrappedValue == value)
     }
 }

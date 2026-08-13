@@ -13,18 +13,38 @@ public struct FloatingHistoryButton: View {
     private let count: Int
     private let action: () -> Void
     private let onHover: (Bool) -> Void
+    private let focus: FocusState<Bool>.Binding?
 
     public init(
         count: Int,
         onHover: @escaping (Bool) -> Void = { _ in },
+        focus: FocusState<Bool>.Binding? = nil,
         action: @escaping () -> Void
     ) {
         self.count = count
         self.onHover = onHover
+        self.focus = focus
         self.action = action
     }
 
     public var body: some View {
+        focusableControl
+    }
+
+    @ViewBuilder
+    private var focusableControl: some View {
+        if let focus {
+            control.chamferFocusable(
+                radius: Chamfer.Radius.pill,
+                focused: focus,
+                equals: true
+            )
+        } else {
+            control.chamferFocusable(radius: Chamfer.Radius.pill)
+        }
+    }
+
+    private var control: some View {
         Button {
             Haptics.pop()
             action()
@@ -78,6 +98,7 @@ struct NoteChangeHistorySheet: View {
     let onDismiss: () -> Void
 
     @LegacyState private var confirmingOutdated: Proposal?
+    @FocusState private var confirmationTrigger: UUID?
 
     private var changes: NoteChangeHistory {
         state.changes(forNoteAt: note.url)
@@ -130,29 +151,30 @@ struct NoteChangeHistorySheet: View {
             .frame(width: 660)
             .background(Chamfer.Palette.paper)
             .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous))
+            .chamferRing(radius: Chamfer.Radius.large)
             .chamferFloat()
             .transition(sheetTransition)
         }
+        .disabled(confirmingOutdated != nil)
         .overlay {
             if let proposal = confirmingOutdated {
                 OutdatedConfirmation(
                     proposal: proposal,
                     onApply: {
-                        confirmingOutdated = nil
+                        dismissConfirmation(restoringFocus: true)
                         commit { actions.accept(proposal, true) }
                     },
                     onRegenerate: {
-                        confirmingOutdated = nil
+                        dismissConfirmation(restoringFocus: true)
                         commit { actions.regenerate(proposal) }
                     },
-                    onCancel: { confirmingOutdated = nil }
+                    onCancel: {
+                        Haptics.commit()
+                        dismissConfirmation(restoringFocus: true)
+                    }
                 )
             }
         }
-        .animation(
-            Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
-            value: confirmingOutdated?.id
-        )
     }
 
     private var header: some View {
@@ -192,7 +214,11 @@ struct NoteChangeHistorySheet: View {
 
     private var queuedSection: some View {
         VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
-            sheetSectionHeader("Queued changes", count: changes.queued.count)
+            SectionHeader(
+                "Queued changes",
+                count: changes.queued.count,
+                surface: .page
+            )
 
             ForEach(changes.queued) { proposal in
                 PendingRewriteRow(
@@ -202,11 +228,15 @@ struct NoteChangeHistorySheet: View {
                     onToggleSelection: {},
                     onAccept: { accept(proposal) },
                     onReject: { commit { actions.reject(proposal) } },
+                    onSetHunkSelected: { hunkID, selected in
+                        actions.setHunkSelected(proposal, hunkID, selected)
+                    },
                     onRegenerate: { commit { actions.regenerate(proposal) } },
                     onRetry: { commit { actions.retry(proposal) } },
                     onOpen: {},
                     showsSelection: false,
-                    showsOpenAction: false
+                    showsOpenAction: false,
+                    acceptFocus: $confirmationTrigger
                 )
             }
         }
@@ -214,7 +244,11 @@ struct NoteChangeHistorySheet: View {
 
     private var historySection: some View {
         VStack(alignment: .leading, spacing: Chamfer.Space.regular) {
-            sheetSectionHeader("Change history", count: changes.history.count)
+            SectionHeader(
+                "Change history",
+                count: changes.history.count,
+                surface: .page
+            )
 
             ForEach(changes.history) { entry in
                 NoteHistoryRow(
@@ -226,24 +260,24 @@ struct NoteChangeHistorySheet: View {
         }
     }
 
-    private func sheetSectionHeader(_ title: String, count: Int) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Chamfer.Space.snug) {
-            Text(title)
-                .font(Chamfer.TypeScale.bodyStrong)
-                .foregroundStyle(Chamfer.Palette.textOnPaper)
-            Text(count.formatted())
-                .font(Chamfer.TypeScale.captionStrong)
-                .foregroundStyle(Chamfer.Palette.textOnPaperFaint)
-        }
-    }
-
     private func accept(_ proposal: Proposal) {
         guard state.isOutdated(proposal) else {
             commit { actions.accept(proposal, false) }
             return
         }
         Haptics.pop()
-        confirmingOutdated = proposal
+        confirmationTrigger = proposal.id
+        withAnimation(sheetArrivalAnimation) {
+            confirmingOutdated = proposal
+        }
+    }
+
+    private func dismissConfirmation(restoringFocus: Bool) {
+        let trigger = confirmingOutdated?.id
+        withAnimation(sheetDepartureAnimation) {
+            confirmingOutdated = nil
+        }
+        if restoringFocus, let trigger { confirmationTrigger = trigger }
     }
 
     private func commit(_ work: () -> Void) {
@@ -254,6 +288,14 @@ struct NoteChangeHistorySheet: View {
     private var sheetTransition: AnyTransition {
         if reduceMotion { return .opacity }
         return .scale(scale: 0.96, anchor: .top).combined(with: .opacity)
+    }
+
+    private var sheetArrivalAnimation: Animation {
+        Chamfer.Motion.reduce(Chamfer.Motion.sheetArrival, when: reduceMotion)
+    }
+
+    private var sheetDepartureAnimation: Animation {
+        Chamfer.Motion.reduce(Chamfer.Motion.sheetDeparture, when: reduceMotion)
     }
 }
 
@@ -318,7 +360,14 @@ private struct NoteHistoryRow: View {
         .background(isHovered ? Chamfer.Palette.paperSunken : .clear)
         .clipShape(RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous))
         .contentShape(Rectangle())
-        .onHover { isHovered = $0 }
+        .onHover { hovering in
+            // Kept identical to the Review timeline: history is actionable in
+            // either place, so its fill and control reveal should answer the
+            // pointer with the same interruptible response.
+            withAnimation(Chamfer.Motion.reduce(Chamfer.Motion.quick, when: reduceMotion)) {
+                isHovered = hovering
+            }
+        }
         .animation(
             Chamfer.Motion.reduce(Chamfer.Motion.navigation, when: reduceMotion),
             value: showingChanges

@@ -39,8 +39,7 @@ struct ModelsCloudPanel: View {
     private var header: some View {
         HStack {
             Text("CLOUD MODEL")
-                .font(.system(size: 9, weight: .bold))
-                .kerning(1.25)
+                .font(Chamfer.TypeScale.eyebrow)
                 .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.68))
             Spacer()
             Button(action: onClose) {
@@ -57,6 +56,7 @@ struct ModelsCloudPanel: View {
                     .padding(-8)
             }
             .buttonStyle(.plain)
+            .chamferFocusableCircle()
             .chamferHoverRingCircle(closeHovered)
             .onHover { closeHovered = $0 }
             .accessibilityLabel("Close cloud model settings")
@@ -90,17 +90,16 @@ struct ModelsCloudPanel: View {
     private var fields: some View {
         VStack(spacing: 0) {
             ModelsFieldRow(label: "Provider") {
-                Picker("Provider", selection: $provider) {
-                    Text("Not configured").tag(nil as CloudProvider?)
-                    ForEach(CloudProvider.allCases, id: \.self) { candidate in
-                        Text(candidate.displayName).tag(Optional(candidate))
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
+                ChamferMenuPicker(
+                    selection: provider,
+                    options: [(nil, "Not configured")]
+                        + CloudProvider.allCases.map {
+                            (Optional($0), $0.displayName)
+                        },
+                    label: "Provider"
+                ) { provider = $0 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(height: 34)
-                .background(ModelsFieldBackground())
+                .frame(height: Chamfer.Control.compactFieldHeight)
             }
 
             ModelsFieldRow(label: "API key") {
@@ -112,9 +111,20 @@ struct ModelsCloudPanel: View {
                 )
                 .textFieldStyle(.plain)
                 .font(.system(size: 11, design: .monospaced))
-                .padding(.horizontal, 10)
-                .frame(height: 34)
+                .padding(.horizontal, Chamfer.Space.snug + 2)
+                .frame(height: Chamfer.Control.compactFieldHeight)
                 .background(ModelsFieldBackground())
+                .padding(
+                    Chamfer.Control.hitPadding(
+                        for: Chamfer.Control.compactFieldHeight
+                    )
+                )
+                .contentShape(Rectangle())
+                .padding(
+                    -Chamfer.Control.hitPadding(
+                        for: Chamfer.Control.compactFieldHeight
+                    )
+                )
                 .disabled(provider == nil)
                 .onSubmit(submit)
             }
@@ -134,53 +144,22 @@ struct ModelsCloudPanel: View {
             }
 
             if let errorMessage {
-                Text(errorMessage)
-                    .font(.system(size: 9))
-                    .foregroundStyle(Chamfer.Palette.danger)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                InlineNotice(
+                    symbol: "exclamationmark.octagon.fill",
+                    tone: .danger,
+                    text: errorMessage
+                )
             }
         }
         .padding(.top, 18)
     }
 
     private var surface: some View {
-        RoundedRectangle(cornerRadius: 22, style: .continuous)
-            .fill(Chamfer.Palette.paper.opacity(0.96))
-            .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                cloudTint.opacity(0.20),
-                                secondaryTint.opacity(0.10),
-                                cloudTint.opacity(0)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(cloudTint.opacity(0.34), lineWidth: 1)
-            }
-            .shadow(color: cloudTint.opacity(0.18), radius: 30, y: 16)
-            .shadow(
-                color: Color(red: 0.31, green: 0.21, blue: 0.10).opacity(0.10),
-                radius: 10,
-                y: 5
-            )
-    }
-
-    private var cloudTint: Color {
-        let value = ModelsBackendTintResponse.tint(for: .cloud)
-        return Color(red: value.red, green: value.green, blue: value.blue)
-    }
-
-    private var secondaryTint: Color {
-        let value = ModelsBackendTintResponse.secondaryTint(for: .cloud)
-        return Color(red: value.red, green: value.green, blue: value.blue)
+        ChamferCardSurface(
+            tint: .models(.cloud),
+            radius: Chamfer.Radius.card,
+            presentation: .cloudPanel
+        )
     }
 
     private var connectionLabel: String {
@@ -249,12 +228,12 @@ private struct ModelsFieldRow<Content: View>: View {
 
 private struct ModelsFieldBackground: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .fill(Chamfer.Palette.page.opacity(0.76))
+        RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
+            .fill(Chamfer.Palette.page)
             .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                RoundedRectangle(cornerRadius: Chamfer.Radius.small, style: .continuous)
                     .strokeBorder(
-                        Chamfer.Palette.barStroke.opacity(0.72),
+                        Chamfer.Palette.pageInsetStroke,
                         lineWidth: 1
                     )
             }
@@ -279,10 +258,14 @@ private struct ModelsPanelButtonStyle: ButtonStyle {
                 .background(Chamfer.Palette.ink)
                 .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .contentShape(Rectangle())
+                .chamferFocusable(radius: 9)
                 .scaleEffect(configuration.isPressed ? 0.98 : 1)
                 .opacity(isEnabled ? (configuration.isPressed ? 0.78 : 1) : 0.50)
                 .animation(Chamfer.Motion.quick, value: configuration.isPressed)
                 .animation(Chamfer.Motion.quick, value: isEnabled)
+                .padding(Chamfer.Control.hitPadding(for: 35))
+                .contentShape(Rectangle())
+                .padding(-Chamfer.Control.hitPadding(for: 35))
         }
     }
 }

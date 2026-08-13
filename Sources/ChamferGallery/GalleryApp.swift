@@ -81,6 +81,7 @@ final class GalleryAppDelegate: NSObject, NSApplicationDelegate {
             actions: MenuBarActions(
                 openMainWindow: { [weak self] in self?.showMainWindow() },
                 openReview: { [weak self] in self?.showMainWindow() },
+                openNote: { [weak self] _ in self?.showMainWindow() },
                 openSettings: { [weak self] in self?.showSettings() },
                 togglePause: { [weak self] in self?.togglePause() },
                 quit: { NSApp.terminate(nil) }

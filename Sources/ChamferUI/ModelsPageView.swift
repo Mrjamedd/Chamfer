@@ -63,6 +63,7 @@ struct ModelsPage: View {
     /// leaves it stuck at its inserted opacity of zero. Everything here reads
     /// one number instead.
     @LegacyState private var panelProgress: CGFloat = 0
+    @FocusState private var cloudTriggerFocused: Bool
 
     private var timing: ModelsMotionTiming {
         ModelsMotionResponse.timing(reduceMotion: reduceMotion)
@@ -202,7 +203,7 @@ struct ModelsPage: View {
     ) -> some View {
         let body = VStack(alignment: .leading, spacing: 0) {
             ModelsPageHeader(compact: metrics.isCompact)
-                .padding(.bottom, metrics.isCompact ? 18 : 24)
+                .padding(.bottom, metrics.headerBottomPadding)
 
             HStack(alignment: .top, spacing: metrics.columnGap) {
                 ModelsPrimaryCard(
@@ -216,6 +217,7 @@ struct ModelsPage: View {
                     // anything the model installer has to say about it is older
                     // news.
                     errorMessage: provisioning.state.failure ?? runtime.errorMessage,
+                    compact: metrics.isCompact,
                     onPrimaryAction: performLocalAction,
                     onHoverChange: { hovering in
                         setHover(.local, hovering: hovering)
@@ -226,6 +228,7 @@ struct ModelsPage: View {
                 ModelsConfigurationColumn(
                     effort: state.effort,
                     isRecessed: recession.isRecessed,
+                    compact: metrics.isCompact,
                     onSelect: select
                 )
                 .frame(width: metrics.configurationWidth)
@@ -239,7 +242,9 @@ struct ModelsPage: View {
                 provider: cloudProvider,
                 isHovered: hoveredBackend == .cloud,
                 isRecessed: recession.isRecessed,
+                compact: metrics.isCompact,
                 onOpen: openCloudConfiguration,
+                focus: $cloudTriggerFocused,
                 onHoverChange: { hovering in
                     setHover(.cloud, hovering: hovering)
                 }
@@ -252,11 +257,11 @@ struct ModelsPage: View {
             }
 
             ModelsLocalFootnote()
-                .padding(.top, metrics.isCompact ? 12 : 16)
+                .padding(.top, metrics.footnoteTopPadding)
         }
         .padding(.horizontal, metrics.horizontalPadding)
         .padding(.top, metrics.topPadding)
-        .padding(.bottom, metrics.isCompact ? 18 : 26)
+        .padding(.bottom, metrics.bottomPadding)
         // Receding rather than blurring: the page has to stay readable behind
         // the panel so the thing being configured is still visible, and a blur
         // on a surface this size costs a frame. Continuous with the panel's own
@@ -264,6 +269,7 @@ struct ModelsPage: View {
         .scaleEffect(recession.scale, anchor: .top)
         .opacity(recession.opacity)
         .allowsHitTesting(!recession.isRecessed)
+        .disabled(recession.isRecessed)
 
         // Always scrollable, never scrolling unnecessarily. `basedOnSize` means
         // a composition that fits behaves exactly like a static page — no
@@ -342,6 +348,10 @@ struct ModelsPage: View {
             state.closeCloudConfiguration()
             panelProgress = 0
         }
+        // The page is disabled while the panel is modal. These writes are
+        // batched into the dismissal update, so the trigger becomes eligible
+        // again at the same moment focus returns to it.
+        cloudTriggerFocused = true
     }
 
     private func performLocalAction() {
@@ -423,6 +433,7 @@ struct ModelsPage: View {
             state.activate(.cloud)
             panelProgress = 0
         }
+        cloudTriggerFocused = true
         ModelsPreferences.save(state: state)
     }
 
@@ -475,8 +486,7 @@ private struct ModelsPageHeader: View {
             HStack(spacing: 9) {
                 ModelsEyebrowMark()
                 Text("CHAMFER  /  INTELLIGENCE")
-                    .font(.system(size: 9, weight: .semibold))
-                    .kerning(1.2)
+                    .font(Chamfer.TypeScale.eyebrow)
                     .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.78))
             }
             .padding(.bottom, compact ? 5 : 8)
@@ -500,7 +510,7 @@ private struct ModelsPageHeader: View {
     }
 }
 
-private struct ModelsEyebrowMark: View {
+struct ModelsEyebrowMark: View {
     var body: some View {
         ZStack {
             Circle()
@@ -540,6 +550,7 @@ private struct ModelsPrimaryCard: View {
     let isHovered: Bool
     let isRecessed: Bool
     let errorMessage: String?
+    let compact: Bool
     let onPrimaryAction: () -> Void
     let onHoverChange: (Bool) -> Void
 
@@ -560,18 +571,24 @@ private struct ModelsPrimaryCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            title.padding(.top, 14)
-            deviceStrip.padding(.top, 16)
-            facts.padding(.top, 10)
+            title.padding(.top, compact ? Chamfer.Space.snug : 14)
+            deviceStrip.padding(.top, compact ? Chamfer.Space.snug : 16)
+            facts.padding(.top, compact ? Chamfer.Space.snug : 10)
 
-            Spacer(minLength: 12)
+            Spacer(minLength: compact ? Chamfer.Space.tight : 12)
 
             statusBlock
-            actionRow.padding(.top, 14)
+            actionRow.padding(.top, compact ? Chamfer.Space.snug : 14)
         }
-        .padding(24)
+        .padding(compact ? Chamfer.Space.roomy : 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(ModelsCardSurface(backend: .local, presentation: presentation))
+        .background(
+            ChamferCardSurface(
+                tint: .models(.local),
+                radius: Chamfer.Radius.card,
+                presentation: presentation
+            )
+        )
         .offset(y: presentation.lift)
         .animation(Chamfer.Motion.reduce(.spring(duration: 0.24, bounce: 0), when: reduceMotion), value: isHovered)
         .onHover(perform: onHoverChange)
@@ -582,8 +599,7 @@ private struct ModelsPrimaryCard: View {
     private var header: some View {
         HStack(alignment: .top) {
             Text("RECOMMENDED FOR THIS MAC")
-                .font(.system(size: 9, weight: .bold))
-                .kerning(1.1)
+                .font(Chamfer.TypeScale.eyebrow)
                 .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.78))
             Spacer(minLength: 8)
             ModelsStatusBadge(
@@ -607,7 +623,13 @@ private struct ModelsPrimaryCard: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 9) {
                 Text(model.displayName)
-                    .font(.system(size: 34, weight: .regular, design: .serif))
+                    .font(
+                        .system(
+                            size: compact ? 29 : 34,
+                            weight: .regular,
+                            design: .serif
+                        )
+                    )
                     .tracking(-1)
                     .foregroundStyle(Chamfer.Palette.pageText)
                 Text(model.parameterLabel)
@@ -618,6 +640,7 @@ private struct ModelsPrimaryCard: View {
                 .font(.system(size: 13, design: .serif))
                 .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.92))
                 .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(compact ? 1 : nil)
                 .lineSpacing(1)
         }
     }
@@ -628,16 +651,20 @@ private struct ModelsPrimaryCard: View {
     private var deviceStrip: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(state.device.summary.uppercased())
-                .font(.system(size: 9, weight: .semibold))
+                .font(Chamfer.TypeScale.micro)
                 .kerning(0.55)
                 .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.72))
-            Text(state.recommendationRationale)
-                .font(.system(size: 11, design: .serif))
-                .foregroundStyle(Chamfer.Palette.pageTextSoft)
-                .fixedSize(horizontal: false, vertical: true)
+            if !compact {
+                Text(state.recommendationRationale)
+                    .font(.system(size: 11, design: .serif))
+                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(11)
+        .padding(compact ? Chamfer.Space.snug : 11)
+        // The interior deliberately tightens below the 22pt card edge, so each
+        // nested layer reads as sitting inside the surface around it.
         .background(ModelsInsetSurface(radius: 12))
     }
 
@@ -646,14 +673,19 @@ private struct ModelsPrimaryCard: View {
     /// empty above its action.
     private var facts: some View {
         HStack(spacing: 8) {
-            ModelsFact(label: "DOWNLOAD", value: model.downloadSizeLabel)
+            ModelsFact(
+                label: "DOWNLOAD",
+                value: model.downloadSizeLabel,
+                compact: compact
+            )
             ModelsFact(
                 label: "MEMORY",
                 value: model.minimumMemoryGB == 0
                     ? "Any Mac"
-                    : "\(model.minimumMemoryGB) GB+"
+                    : "\(model.minimumMemoryGB) GB+",
+                compact: compact
             )
-            ModelsFact(label: "NETWORK", value: "Once, then never")
+            ModelsFact(label: "NETWORK", value: "Once, then never", compact: compact)
         }
     }
 
@@ -750,10 +782,16 @@ private struct ModelsStateMark: View {
     var body: some View {
         HStack(spacing: 7) {
             if showsSpinner {
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.8)
-                    .frame(width: 13, height: 13)
+                ZStack(alignment: .leading) {
+                    Capsule().fill(tint.opacity(0.16))
+                    ModelsIndeterminateSweep(
+                        width: 16,
+                        minimumSegmentWidth: 5,
+                        tint: tint.opacity(0.78)
+                    )
+                }
+                .frame(width: 16, height: 4)
+                .clipShape(Capsule())
             } else if let symbol {
                 Image(systemName: symbol)
                     .font(.system(size: 13, weight: .semibold))
@@ -776,13 +814,18 @@ private struct ModelsStateMark: View {
 private struct ModelsFact: View {
     let label: String
     let value: String
+    let compact: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label)
-                .font(.system(size: 8, weight: .semibold))
+                .font(Chamfer.TypeScale.micro)
                 .kerning(0.5)
                 .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.68))
+                // Three facts share a fixed card row. Scaling is the last
+                // resort before clipping, not a return to an 8pt default.
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
             Text(value)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Chamfer.Palette.pageText)
@@ -790,8 +833,8 @@ private struct ModelsFact: View {
                 .minimumScaleFactor(0.85)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
+        .padding(.horizontal, compact ? Chamfer.Space.snug : 10)
+        .padding(.vertical, compact ? Chamfer.Space.tight : 9)
         .background(ModelsInsetSurface(radius: 11))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(label): \(value)")
@@ -805,6 +848,7 @@ private struct ModelsConfigurationColumn: View {
 
     let effort: ModelEffort
     let isRecessed: Bool
+    let compact: Bool
     let onSelect: (ModelEffort) -> Void
 
     private var presentation: ModelsSurfacePresentation {
@@ -819,10 +863,9 @@ private struct ModelsConfigurationColumn: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("CONFIGURATION")
-                .font(.system(size: 9, weight: .bold))
-                .kerning(1.1)
+                .font(Chamfer.TypeScale.eyebrow)
                 .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.78))
-                .padding(.bottom, 11)
+                .padding(.bottom, compact ? Chamfer.Space.snug : 11)
 
             VStack(spacing: 2) {
                 ForEach(ModelEffort.allCases) { candidate in
@@ -852,29 +895,48 @@ private struct ModelsConfigurationColumn: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Model effort")
 
-            Divider()
-                .overlay(Chamfer.Palette.paperStroke.opacity(0.8))
-                .padding(.vertical, 12)
+            PageRule()
+                .opacity(0.8)
+                .padding(.vertical, compact ? Chamfer.Space.snug : 12)
 
-            VStack(spacing: 8) {
-                ForEach(effort.profile.readouts) { readout in
-                    ModelsReadoutRow(readout: readout)
+            if compact {
+                LazyVGrid(
+                    columns: [GridItem(.flexible()), GridItem(.flexible())],
+                    spacing: Chamfer.Space.snug
+                ) {
+                    ForEach(effort.profile.readouts) { readout in
+                        ModelsReadoutRow(readout: readout)
+                    }
+                }
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(effort.profile.readouts) { readout in
+                        ModelsReadoutRow(readout: readout)
+                    }
                 }
             }
 
-            Spacer(minLength: 10)
+            Spacer(minLength: compact ? 0 : 10)
 
-            Text(effort.profile.mechanics)
-                .font(.system(size: 9))
-                .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.72))
-                .lineSpacing(1)
-                .fixedSize(horizontal: false, vertical: true)
-                .contentTransition(.opacity)
+            if !compact {
+                Text(effort.profile.mechanics)
+                    .font(Chamfer.TypeScale.micro)
+                    .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.72))
+                    .lineSpacing(1)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .contentTransition(.opacity)
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 17)
+        .padding(.horizontal, compact ? Chamfer.Space.regular : 16)
+        .padding(.vertical, compact ? Chamfer.Space.regular : 17)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(ModelsCardSurface(backend: .local, presentation: presentation))
+        .background(
+            ChamferCardSurface(
+                tint: .models(.local),
+                radius: Chamfer.Radius.card,
+                presentation: presentation
+            )
+        )
     }
 }
 
@@ -898,7 +960,7 @@ private struct ModelsEffortRow: View {
                                 .opacity(presentation.titleOpacity)
                         )
                     Text(effort.tagline)
-                        .font(.system(size: 9.5, design: .serif))
+                        .font(Chamfer.TypeScale.micro)
                         .foregroundStyle(
                             (presentation.isSelected
                                 ? Chamfer.Palette.textOnInkSoft
@@ -906,6 +968,9 @@ private struct ModelsEffortRow: View {
                                 .opacity(presentation.detailOpacity)
                         )
                         .lineLimit(1)
+                        // The selector column is fixed. Preserve the full
+                        // tagline by yielding slightly before it can clip.
+                        .minimumScaleFactor(0.90)
                 }
                 Spacer(minLength: 0)
                 if presentation.isSelected {
@@ -930,6 +995,10 @@ private struct ModelsEffortRow: View {
             }
         }
         .buttonStyle(.plain)
+        .chamferFocusable(radius: 10)
+        .padding(Chamfer.Control.hitPadding(for: 38))
+        .contentShape(Rectangle())
+        .padding(-Chamfer.Control.hitPadding(for: 38))
         .onHover(perform: onHoverChange)
         .accessibilityLabel("\(effort.title). \(effort.tagline)")
         .accessibilityValue(presentation.isSelected ? "Selected" : "")
@@ -957,7 +1026,7 @@ private struct ModelsReadoutRow: View {
                     .foregroundStyle(Chamfer.Palette.pageTextSoft)
                 Spacer(minLength: 4)
                 Text(readout.caption)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(Chamfer.TypeScale.micro)
                     .foregroundStyle(Chamfer.Palette.pageText.opacity(0.86))
                     .contentTransition(.opacity)
             }
@@ -987,7 +1056,9 @@ private struct ModelsCloudRow: View {
     let provider: CloudProvider?
     let isHovered: Bool
     let isRecessed: Bool
+    let compact: Bool
     let onOpen: () -> Void
+    let focus: FocusState<Bool>.Binding
     let onHoverChange: (Bool) -> Void
 
     private var presentation: ModelsSurfacePresentation {
@@ -1008,8 +1079,7 @@ private struct ModelsCloudRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text("CLOUD  ·  OPTIONAL")
-                        .font(.system(size: 9, weight: .bold))
-                        .kerning(1.1)
+                        .font(Chamfer.TypeScale.eyebrow)
                         .foregroundStyle(Chamfer.Palette.pageTextSoft.opacity(0.72))
                     ModelsStatusBadge(
                         text: state.status(for: .cloud),
@@ -1022,10 +1092,12 @@ private struct ModelsCloudRow: View {
                     .font(.system(size: 21, weight: .regular, design: .serif))
                     .tracking(-0.5)
                     .foregroundStyle(Chamfer.Palette.pageText)
-                Text(detail)
-                    .font(.system(size: 11, design: .serif))
-                    .foregroundStyle(Chamfer.Palette.pageTextSoft)
-                    .lineLimit(1)
+                if !compact {
+                    Text(detail)
+                        .font(.system(size: 11, design: .serif))
+                        .foregroundStyle(Chamfer.Palette.pageTextSoft)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 8)
             Button(action: onOpen) {
@@ -1035,13 +1107,19 @@ private struct ModelsCloudRow: View {
                         .font(.system(size: 9, weight: .semibold))
                 }
             }
-            .buttonStyle(ModelsQuietButtonStyle())
+            .buttonStyle(ModelsQuietButtonStyle(focus: focus))
             .accessibilityHint("Opens cloud provider settings")
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.vertical, compact ? Chamfer.Space.regular : 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(ModelsCardSurface(backend: .cloud, presentation: presentation))
+        .background(
+            ChamferCardSurface(
+                tint: .models(.cloud),
+                radius: Chamfer.Radius.large,
+                presentation: presentation
+            )
+        )
         // Covered rather than removed. The page's whole argument is that the
         // local model is the product and cloud is the quieter alternative
         // beneath it; deleting the row would leave that argument with one side,
@@ -1079,10 +1157,10 @@ private struct ModelsCloudRow: View {
 /// which is the only reason to leave it on the page at all.
 private struct ModelsComingSoonScrim: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: 18, style: .continuous)
+        RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous)
             .fill(Chamfer.Palette.canvas.opacity(0.86))
             .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: Chamfer.Radius.large, style: .continuous)
                     .strokeBorder(
                         Chamfer.Palette.pageTextSoft.opacity(0.20),
                         style: StrokeStyle(lineWidth: 1, dash: [4, 3])
@@ -1091,8 +1169,7 @@ private struct ModelsComingSoonScrim: View {
             .overlay {
                 VStack(spacing: 4) {
                     Text(ModelsCloudAvailability.comingSoonTitle)
-                        .font(.system(size: 9, weight: .bold))
-                        .kerning(1.4)
+                        .font(Chamfer.TypeScale.eyebrow)
                         .foregroundStyle(Chamfer.Palette.pageText.opacity(0.72))
                     Text(ModelsCloudAvailability.comingSoonDetail)
                         .font(.system(size: 11, design: .serif))
@@ -1111,73 +1188,18 @@ private struct ModelsComingSoonScrim: View {
 
 // MARK: - Shared surfaces
 
-private struct ModelsCardSurface: View {
-    let backend: ModelsBackendID
-    let presentation: ModelsSurfacePresentation
-
-    private var tint: Color {
-        let value = ModelsBackendTintResponse.tint(for: backend)
-        return Color(red: value.red, green: value.green, blue: value.blue)
-    }
-
-    private var secondary: Color {
-        let value = ModelsBackendTintResponse.secondaryTint(for: backend)
-        return Color(red: value.red, green: value.green, blue: value.blue)
-    }
-
-    private var radius: CGFloat { backend == .local ? 22 : 18 }
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: radius, style: .continuous)
-            .fill(Chamfer.Palette.paper.opacity(presentation.paperOpacity))
-            .overlay {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                tint.opacity(presentation.tintOpacity),
-                                secondary.opacity(presentation.secondaryTintOpacity),
-                                tint.opacity(0)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(
-                        tint.opacity(presentation.borderOpacity),
-                        lineWidth: 1
-                    )
-            }
-            .shadow(
-                color: tint.opacity(presentation.shadowOpacity),
-                radius: presentation.shadowRadius,
-                y: presentation.shadowY
+extension ChamferCardSurface.Tint {
+    static func models(_ backend: ModelsBackendID) -> Self {
+        let primary = ModelsBackendTintResponse.tint(for: backend)
+        let secondary = ModelsBackendTintResponse.secondaryTint(for: backend)
+        return Self(
+            primary: Color(red: primary.red, green: primary.green, blue: primary.blue),
+            secondary: Color(
+                red: secondary.red,
+                green: secondary.green,
+                blue: secondary.blue
             )
-            .shadow(
-                color: Color(red: 0.31, green: 0.21, blue: 0.10)
-                    .opacity(presentation.shadowOpacity * 0.5),
-                radius: 8,
-                y: 4
-            )
-    }
-}
-
-struct ModelsInsetSurface: View {
-    let radius: CGFloat
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: radius, style: .continuous)
-            .fill(Chamfer.Palette.canvas.opacity(0.50))
-            .overlay {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(
-                        Chamfer.Palette.paperStroke.opacity(0.72),
-                        lineWidth: 1
-                    )
-            }
+        )
     }
 }
 
@@ -1213,8 +1235,12 @@ struct ModelsStatusBadge: View {
         HStack(spacing: 5) {
             ModelsStatusDot(tone: tone)
             Text(text)
-                .font(.system(size: 9, weight: .bold))
+                .font(Chamfer.TypeScale.micro)
                 .kerning(0.9)
+                // Card headers cannot widen around a long state. Let the
+                // 10pt floor yield slightly before the capsule can clip it.
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
         }
         .foregroundStyle(
             tone == .quiet
@@ -1230,7 +1256,7 @@ struct ModelsStatusBadge: View {
                 Capsule().fill(Chamfer.Palette.canvasDeep.opacity(0.55))
             }
         }
-        .fixedSize()
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -1274,7 +1300,7 @@ private struct ModelsDownloadTrack: View {
 
             if let fraction = download?.fraction {
                 Text("\(Int(fraction * 100))%")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(Chamfer.TypeScale.micro)
                     .foregroundStyle(Chamfer.Palette.pageTextSoft)
                     .contentTransition(.numericText())
             }
@@ -1292,16 +1318,30 @@ private struct ModelsIndeterminateSweep: View {
     @LegacyState private var advanced = false
 
     let width: CGFloat
+    var minimumSegmentWidth: CGFloat = 24
+    var tint = Chamfer.Palette.ink.opacity(0.55)
+
+    private var segmentWidth: CGFloat {
+        max(minimumSegmentWidth, width * 0.32)
+    }
+
+    private var travel: CGFloat {
+        max(0, width - segmentWidth)
+    }
 
     var body: some View {
         Capsule()
-            .fill(Chamfer.Palette.ink.opacity(0.55))
-            .frame(width: max(24, width * 0.32))
-            .offset(x: advanced ? max(0, width * 0.68) : 0)
+            .fill(tint)
+            .frame(width: segmentWidth)
+            .offset(x: reduceMotion ? travel / 2 : (advanced ? travel : 0))
             .onAppear {
                 guard !reduceMotion else { return }
                 withAnimation(
-                    .easeInOut(duration: 1.1).repeatForever(autoreverses: true)
+                    Chamfer.Motion.reduce(
+                        Chamfer.Motion.indeterminate
+                            .repeatForever(autoreverses: true),
+                        when: reduceMotion
+                    )
                 ) {
                     advanced = true
                 }
@@ -1329,30 +1369,54 @@ private struct ModelsPrimaryButtonStyle: ButtonStyle {
                 .background(Chamfer.Palette.ink)
                 .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .contentShape(Rectangle())
+                .chamferFocusable(radius: 11)
                 .scaleEffect(configuration.isPressed ? 0.975 : 1)
                 .opacity(isEnabled ? (configuration.isPressed ? 0.84 : 1) : 0.42)
                 .animation(Chamfer.Motion.quick, value: configuration.isPressed)
                 .animation(Chamfer.Motion.quick, value: isEnabled)
+                .padding(Chamfer.Control.hitPadding(for: 38))
+                .contentShape(Rectangle())
+                .padding(-Chamfer.Control.hitPadding(for: 38))
         }
     }
 }
 
 private struct ModelsQuietButtonStyle: ButtonStyle {
+    let focus: FocusState<Bool>.Binding?
+
+    init(focus: FocusState<Bool>.Binding? = nil) {
+        self.focus = focus
+    }
+
     func makeBody(configuration: Configuration) -> some View {
-        StyledLabel(configuration: configuration)
+        StyledLabel(configuration: configuration, focus: focus)
     }
 
     private struct StyledLabel: View {
         @Environment(\.isEnabled) private var isEnabled
         @LegacyState private var isHovered = false
         let configuration: ModelsQuietButtonStyle.Configuration
+        let focus: FocusState<Bool>.Binding?
 
+        @ViewBuilder
         var body: some View {
+            if let focus {
+                label.chamferFocusable(
+                    radius: 10,
+                    focused: focus,
+                    equals: true
+                )
+            } else {
+                label.chamferFocusable(radius: 10)
+            }
+        }
+
+        private var label: some View {
             configuration.label
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Chamfer.Palette.pageText.opacity(isHovered ? 0.98 : 0.88))
                 .padding(.horizontal, 14)
-                .frame(height: 34)
+                .frame(height: Chamfer.Control.compactFieldHeight)
                 .background {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Chamfer.Palette.paper.opacity(isHovered ? 0.86 : 0.68))
@@ -1371,6 +1435,17 @@ private struct ModelsQuietButtonStyle: ButtonStyle {
                     withAnimation(Chamfer.Motion.interactive) { isHovered = hovering }
                 }
                 .animation(Chamfer.Motion.quick, value: configuration.isPressed)
+                .padding(
+                    Chamfer.Control.hitPadding(
+                        for: Chamfer.Control.compactFieldHeight
+                    )
+                )
+                .contentShape(Rectangle())
+                .padding(
+                    -Chamfer.Control.hitPadding(
+                        for: Chamfer.Control.compactFieldHeight
+                    )
+                )
         }
     }
 }

@@ -16,6 +16,72 @@ enum SystemBundle {
     static let exists = Bundle.main.bundleIdentifier != nil
 }
 
+/// Stable identifiers shared by registration and response routing.
+///
+/// They are deliberately independent of button copy: changing “Open Models”
+/// should not strand notifications already delivered by an earlier build.
+enum NotificationAction {
+    static let review = "chamfer.notification.review"
+    static let undo = "chamfer.notification.undo"
+    static let models = "chamfer.notification.models"
+    static let vaults = "chamfer.notification.vaults"
+}
+
+/// The four things a delivered notification can ask the app to do.
+enum NotificationRoute: Equatable, Sendable {
+    case review
+    case undo(UUID)
+    case models
+    case vaults
+}
+
+/// Turns an AppKit/UserNotifications response into an app decision.
+///
+/// Kept pure so routing can be proved in a source build, where touching
+/// `UNUserNotificationCenter.current()` would raise before a test could run.
+enum NotificationRouter {
+    static let historyEntryKey = "historyEntryID"
+
+    static func route(
+        actionIdentifier: String,
+        categoryIdentifier: String? = nil,
+        userInfo: [AnyHashable: Any]
+    ) -> NotificationRoute? {
+        switch actionIdentifier {
+        case NotificationAction.review:
+            return .review
+        case NotificationAction.undo:
+            guard let value = userInfo[historyEntryKey] as? String,
+                  let historyEntryID = UUID(uuidString: value)
+            else { return nil }
+            return .undo(historyEntryID)
+        case NotificationAction.models:
+            return .models
+        case NotificationAction.vaults:
+            return .vaults
+        case UNNotificationDefaultActionIdentifier:
+            return defaultRoute(for: categoryIdentifier)
+        default:
+            return nil
+        }
+    }
+
+    private static func defaultRoute(for identifier: String?) -> NotificationRoute? {
+        guard let identifier,
+              let category = NotificationCategory(rawValue: identifier)
+        else { return nil }
+
+        return switch category {
+        case .rewriteReady, .automaticApplied, .rewriteFailed, .periodicSummary:
+            .review
+        case .folderUnavailable:
+            .vaults
+        case .modelUnavailable:
+            .models
+        }
+    }
+}
+
 /// Opening at login.
 ///
 /// A thin wrapper over `SMAppService`, which throws for reasons the user can do
@@ -73,6 +139,74 @@ final class NotificationCentre {
     /// Whether Chamfer can notify at all in this build.
     var isAvailable: Bool { SystemBundle.exists }
 
+    /// Installs every category and the one delegate that receives its actions.
+    ///
+    /// Registration is as guarded as delivery. Even asking the system centre
+    /// for a source build is fatal, so the guard must precede the lookup rather
+    /// than merely making the resulting categories inert.
+    func configureResponses(delegate: any UNUserNotificationCenterDelegate) {
+        guard SystemBundle.exists else { return }
+        let centre = UNUserNotificationCenter.current()
+        centre.delegate = delegate
+        centre.setNotificationCategories(Self.categories)
+    }
+
+    private static var categories: Set<UNNotificationCategory> {
+        let review = UNNotificationAction(
+            identifier: NotificationAction.review,
+            title: "Review",
+            options: [.foreground]
+        )
+        let undo = UNNotificationAction(
+            identifier: NotificationAction.undo,
+            title: "Undo",
+            options: []
+        )
+        let models = UNNotificationAction(
+            identifier: NotificationAction.models,
+            title: "Open Models",
+            options: [.foreground]
+        )
+        let vaults = UNNotificationAction(
+            identifier: NotificationAction.vaults,
+            title: "Open Vaults",
+            options: [.foreground]
+        )
+
+        return Set([
+            UNNotificationCategory(
+                identifier: NotificationCategory.rewriteReady.rawValue,
+                actions: [review],
+                intentIdentifiers: []
+            ),
+            UNNotificationCategory(
+                identifier: NotificationCategory.automaticApplied.rawValue,
+                actions: [undo],
+                intentIdentifiers: []
+            ),
+            UNNotificationCategory(
+                identifier: NotificationCategory.rewriteFailed.rawValue,
+                actions: [review],
+                intentIdentifiers: []
+            ),
+            UNNotificationCategory(
+                identifier: NotificationCategory.folderUnavailable.rawValue,
+                actions: [vaults],
+                intentIdentifiers: []
+            ),
+            UNNotificationCategory(
+                identifier: NotificationCategory.modelUnavailable.rawValue,
+                actions: [models],
+                intentIdentifiers: []
+            ),
+            UNNotificationCategory(
+                identifier: NotificationCategory.periodicSummary.rawValue,
+                actions: [review],
+                intentIdentifiers: []
+            )
+        ])
+    }
+
     /// Asked for once, and only when there is something to say.
     ///
     /// Prompting at launch — before the user has connected a vault or seen a
@@ -98,6 +232,7 @@ final class NotificationCentre {
         _ category: NotificationCategory,
         title: String,
         body: String,
+        userInfo: [String: String] = [:],
         preferences: AppPreferences
     ) {
         guard preferences.notifies(about: category) else { return }
@@ -112,6 +247,8 @@ final class NotificationCentre {
             content.title = title
             content.body = body
             content.sound = nil
+            content.categoryIdentifier = category.rawValue
+            content.userInfo = userInfo
 
             try? await centre.add(
                 UNNotificationRequest(
@@ -136,11 +273,16 @@ final class NotificationCentre {
         )
     }
 
-    func automaticApplied(noteTitle: String, preferences: AppPreferences) {
+    func automaticApplied(
+        noteTitle: String,
+        historyEntryID: UUID,
+        preferences: AppPreferences
+    ) {
         post(
             .automaticApplied,
             title: "Chamfer cleaned a note",
             body: "“\(noteTitle)” was rewritten automatically. It can be undone from Review.",
+            userInfo: [NotificationRouter.historyEntryKey: historyEntryID.uuidString],
             preferences: preferences
         )
     }

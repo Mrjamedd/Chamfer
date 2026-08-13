@@ -34,7 +34,10 @@ public extension Chamfer {
         /// used by every interactive surface in the app. Deliberately barely
         /// there — it should be felt more than seen.
         public static let ring = rgb(0xE79BC0).opacity(0.38)
-        public static let barRing = rgb(0xE79BC0).opacity(0.20)
+        /// Permanent structural frames need less emphasis than a control's
+        /// hover ring. The page and bar are always present, so this strength
+        /// keeps the brand line visible without making either one glow.
+        public static let structuralRing = rgb(0xE79BC0).opacity(0.20)
         public static let ringWidth: CGFloat = 1
         /// The same pink, drawn to be seen rather than felt.
         ///
@@ -260,10 +263,29 @@ public extension Chamfer {
         public static let section: CGFloat = 32
     }
 
+    enum Control {
+        /// The visible controls stay compact, but the area that answers the
+        /// pointer is never allowed to ask for more precision than this.
+        public static let minimumHitSize: CGFloat = 44
+        /// Menus and text fields share this visible height so form rows keep a
+        /// single baseline and rhythm even though their contents differ.
+        public static let compactFieldHeight: CGFloat = 34
+
+        public static func hitPadding(for visualSize: CGFloat) -> CGFloat {
+            max(0, (minimumHitSize - visualSize) / 2)
+        }
+    }
+
     enum Radius {
         public static let small: CGFloat = 8
         public static let medium: CGFloat = 12
         public static let large: CGFloat = 18
+        /// The outer edge of a floating content card, softer than the controls
+        /// and inset surfaces it contains.
+        public static let card: CGFloat = 22
+        /// The app's main paper sheet, whose larger scale needs the broadest
+        /// corner in the shared hierarchy.
+        public static let page: CGFloat = 24
         public static let pill: CGFloat = 999
     }
 
@@ -272,6 +294,12 @@ public extension Chamfer {
         public static let interactiveDuration: TimeInterval = 0.20
         public static let navigationDuration: TimeInterval = 0.30
         public static let reducedDuration: TimeInterval = 0.12
+        /// A sheet is large enough that its arrival can use the full navigation
+        /// beat, but it has no gesture momentum to earn an overshoot.
+        public static let sheetArrivalDuration = navigationDuration
+        /// Leaving clears the page sooner than arriving fills it. Keeping both
+        /// values here prevents the three sheet hosts from drifting apart.
+        public static let sheetDepartureDuration = interactiveDuration
 
         /// A spring rather than an ease, at the same 100ms. At this length the
         /// two are all but indistinguishable standing still — the difference
@@ -316,6 +344,34 @@ public extension Chamfer {
             duration: navigationDuration,
             bounce: 0.02
         )
+        public static let sheetArrival = Animation.spring(
+            duration: sheetArrivalDuration,
+            bounce: 0
+        )
+        public static let sheetDeparture = Animation.spring(
+            duration: sheetDepartureDuration,
+            bounce: 0
+        )
+        /// Text and small illustrative content have no gesture velocity to
+        /// carry, so their direct-input handoff is quick but never bouncy.
+        public static let contentArrival = Animation.spring(
+            duration: interactiveDuration,
+            bounce: 0
+        )
+        /// Outgoing content clears in half the arrival beat. It is still a
+        /// spring so reversing a step mid-handoff starts from what is visible.
+        public static let contentDeparture = Animation.spring(
+            duration: quickDuration,
+            bounce: 0
+        )
+        /// Continuous work has to remain legible as motion rather than flash.
+        /// This is longer than an interaction because it reports no input and
+        /// no progress; critically damped travel keeps the sweep quiet at each
+        /// turn while preserving spring interruption when the state disappears.
+        public static let indeterminate = Animation.spring(
+            duration: 1.1,
+            bounce: 0
+        )
     }
 }
 
@@ -323,12 +379,18 @@ public extension Chamfer {
 
 public extension Chamfer {
     enum Page {
-        /// Width of the text column. At 17pt serif this is roughly 68
-        /// characters a line, inside the 60–75 that reads comfortably. The
-        /// previous 660 ran to about 88, which is why the lines felt long.
-        public static let measure: CGFloat = 540
+        /// Width of the text column. The actual 17pt New York face averages
+        /// 7.859pt per character across representative prose, and TextKit
+        /// keeps 5pt of line-fragment padding on each edge. The resulting
+        /// `(520 - 10) / 7.859` is 64.9 characters a line.
+        public static let measure: CGFloat = 520
         /// Space between the column and the edge of the sheet.
         public static let margin: CGFloat = 64
+        /// The large sheet is nested inside an already rounded window. Its
+        /// shadow therefore carries less opacity than a genuinely floating
+        /// card, so the sheet reads as resting in the window rather than as a
+        /// second window laid on top.
+        public static let sheetShadowOpacity = 0.09
         /// The sheet's natural width: column plus its margins.
         public static var width: CGFloat { measure + margin * 2 }
     }
@@ -386,23 +448,99 @@ public extension Chamfer {
 public extension Chamfer {
     /// Not named `Type` — `Chamfer.Type` would collide with metatype syntax.
     enum TypeScale {
+        private static let pageTitleSize: CGFloat = 40
+        private static let pageHeadingSize: CGFloat = 23
+        private static let pageBodySize: CGFloat = 17
+        private static let pageSubtitleSize: CGFloat = 15
+
+        /// A font whose letter spacing is part of the style rather than another
+        /// number for each small-cap label to reinterpret.
+        public struct TrackedFont: Sendable {
+            fileprivate let font: Font
+            fileprivate let kerning: CGFloat
+        }
+
         public static let display = Font.system(size: 26, weight: .semibold)
         public static let title = Font.system(size: 15, weight: .semibold)
         public static let body = Font.system(size: 13, weight: .regular)
         public static let bodyStrong = Font.system(size: 13, weight: .medium)
         public static let caption = Font.system(size: 11, weight: .regular)
         public static let captionStrong = Font.system(size: 11, weight: .semibold)
-        public static let mono = Font.system(size: 12, weight: .regular, design: .monospaced)
+        /// The floor for compact data labels that still need to be read rather
+        /// than merely decorate a control.
+        public static let micro = Font.system(size: 10, weight: .semibold)
+        /// The 1.2pt tracking is the middle of the 1.1–1.4pt range these labels
+        /// grew independently. It keeps 10pt capitals open without making short
+        /// headings and badges feel scattered.
+        public static let eyebrow = TrackedFont(
+            font: .system(size: 10, weight: .bold),
+            kerning: 1.2
+        )
+        /// Diffs are decisions, not supporting metadata. Thirteen points keeps
+        /// punctuation and whitespace readable while remaining compact enough
+        /// for a before-and-after pair inside the page measure.
+        public static let mono = Font.system(size: 13, weight: .regular, design: .monospaced)
 
         // The note page reads as a printed page, so it is set in a serif at
         // reading sizes rather than in the UI font.
-        public static let pageTitle = Font.system(size: 40, weight: .bold, design: .serif)
-        public static let pageHeading = Font.system(size: 23, weight: .semibold, design: .serif)
-        public static let pageBody = Font.system(size: 17, weight: .regular, design: .serif)
+        public static let pageTitle = Font.system(
+            size: pageTitleSize,
+            weight: .bold,
+            design: .serif
+        )
+        public static let pageHeading = Font.system(
+            size: pageHeadingSize,
+            weight: .semibold,
+            design: .serif
+        )
+        public static let pageBody = Font.system(
+            size: pageBodySize,
+            weight: .regular,
+            design: .serif
+        )
         /// The line under a page's heading: the serif voice, but stepped down
         /// far enough that it explains the heading rather than competing with
         /// it. Below `pageBody` because it is not prose to be read at length.
-        public static let pageSubtitle = Font.system(size: 15, weight: .regular, design: .serif)
+        public static let pageSubtitle = Font.system(
+            size: pageSubtitleSize,
+            weight: .regular,
+            design: .serif
+        )
+
+        /// TextKit cannot consume SwiftUI's `Font`, so the native editor draws
+        /// from the same sizes rather than maintaining a second page scale.
+        internal static var pageBodyNSFont: NSFont {
+            serifNSFont(size: pageBodySize, weight: .regular)
+        }
+
+        /// Markdown headings stop at the existing page-heading size. Dividing
+        /// the six-point gap back to body text keeps all three levels distinct
+        /// without turning a raw note into a second rendered-document system.
+        internal static func noteHeadingNSFont(level: Int) -> NSFont {
+            let step = (pageHeadingSize - pageBodySize) / 3
+            let size = pageHeadingSize - CGFloat(level - 1) * step
+            let weight: NSFont.Weight = level < 3 ? .semibold : .medium
+            return serifNSFont(size: size, weight: weight)
+        }
+
+        private static func serifNSFont(
+            size: CGFloat,
+            weight: NSFont.Weight
+        ) -> NSFont {
+            let system = NSFont.systemFont(ofSize: size, weight: weight)
+            guard let descriptor = system.fontDescriptor.withDesign(.serif),
+                  let serif = NSFont(descriptor: descriptor, size: size)
+            else { return system }
+            return serif
+        }
+    }
+}
+
+public extension View {
+    /// Applies both halves of a tracked type token so its spacing cannot drift
+    /// away from the font at individual call sites.
+    func font(_ style: Chamfer.TypeScale.TrackedFont) -> some View {
+        font(style.font).kerning(style.kerning)
     }
 }
 

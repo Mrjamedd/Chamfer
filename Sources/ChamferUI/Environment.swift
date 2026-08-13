@@ -55,8 +55,8 @@ public extension EnvironmentValues {
         set { self[ChamferNowKey.self] = newValue }
     }
 
-    /// The surface the current view is drawn on. `Card` flips this to `.ink`
-    /// while hovered, and every component inside recolours itself.
+    /// The surface the current view is drawn on. Components recolour from this
+    /// value without each one needing to know what contains it.
     var chamferSurface: SurfaceMode {
         get { self[ChamferSurfaceKey.self] }
         set { self[ChamferSurfaceKey.self] = newValue }

@@ -175,6 +175,73 @@ func acceptingAProposalRemovesItAndCannotApplyItTwice() throws {
 }
 
 @Test @MainActor
+func acceptingAProposalAppliesOnlyTheHunksThatWereKept() throws {
+    let bench = try RewriteBench()
+    defer { bench.tearDown() }
+    let source = "Intro\nteh first\nMiddle\nteh second\nLater\nteh third\nEnd"
+    try Data(source.utf8).write(to: bench.noteURL, options: .atomic)
+    let summary = try #require(VaultScanner.read(bench.noteURL)?.summary)
+    let first = Hunk(
+        before: "teh first",
+        after: "the first\nwith detail",
+        startLine: 2
+    )
+    let second = Hunk(before: "teh second", after: "the second", startLine: 4)
+    let third = Hunk(before: "teh third", after: "the third", startLine: 6)
+    var proposal = Proposal(
+        note: summary,
+        hunks: [first, second, third],
+        baseText: source,
+        proposedText: "Intro\nthe first\nwith detail\nMiddle\nthe second\nLater\nthe third\nEnd",
+        createdAt: Date(),
+        sourceModifiedAt: summary.modifiedAt,
+        mode: .spelling,
+        modelID: "test",
+        vaultID: bench.vault.id
+    )
+    proposal.setHunkSelected(second.id, selected: false)
+    let model = bench.model(proposals: [proposal])
+    let service = RewriteService(
+        model: model,
+        notes: NoteService(model: model),
+        writer: NoteWriter(
+            snapshots: SnapshotStore(directory: bench.directory.appending(path: "Snapshots"))
+        ),
+        modelEffort: { .base }
+    )
+
+    #expect(service.apply(proposal, as: .review) == nil)
+
+    let expected = "Intro\nthe first\nwith detail\nMiddle\nteh second\nLater\nthe third\nEnd"
+    #expect(try String(contentsOf: bench.noteURL, encoding: .utf8) == expected)
+    #expect(model.dashboard.history.first?.appliedText == expected)
+    #expect(model.dashboard.proposals.isEmpty)
+}
+
+@Test @MainActor
+func acceptingAProposalWithNoSelectedHunksWritesNothing() throws {
+    let bench = try RewriteBench()
+    defer { bench.tearDown() }
+    var proposal = bench.proposal
+    proposal.setHunkSelected(proposal.hunks[0].id, selected: false)
+    let model = bench.model(proposals: [proposal])
+    let snapshots = bench.directory.appending(path: "Snapshots")
+    let service = RewriteService(
+        model: model,
+        notes: NoteService(model: model),
+        writer: NoteWriter(snapshots: SnapshotStore(directory: snapshots)),
+        modelEffort: { .base }
+    )
+
+    #expect(service.apply(proposal, as: .review) == nil)
+
+    #expect(try String(contentsOf: bench.noteURL, encoding: .utf8) == "teh note")
+    #expect(model.dashboard.history.isEmpty)
+    #expect(model.dashboard.proposals == [proposal])
+    #expect(!FileManager.default.fileExists(atPath: snapshots.path))
+}
+
+@Test @MainActor
 func outdatedProposalRequiresExplicitApprovalAndThenWritesExactCandidate() throws {
     let bench = try RewriteBench()
     defer { bench.tearDown() }
@@ -248,6 +315,25 @@ func rejectingAProposalRemovesItAndCannotRejectItTwice() throws {
     service.reject(bench.proposal)
 
     #expect(model.dashboard.proposals.isEmpty)
+}
+
+@Test @MainActor
+func changingAHunkSelectionUpdatesTheQueuedProposal() throws {
+    let bench = try RewriteBench()
+    defer { bench.tearDown() }
+    let model = bench.model(proposals: [bench.proposal])
+    let service = RewriteService(model: model, notes: NoteService(model: model))
+    let hunkID = bench.proposal.hunks[0].id
+
+    service.setHunkSelected(bench.proposal, hunkID: hunkID, selected: false)
+
+    #expect(model.dashboard.proposals.first?.excludedHunkIDs == [hunkID])
+    #expect(model.dashboard.proposals.first?.changeCount == 0)
+
+    service.setHunkSelected(bench.proposal, hunkID: hunkID, selected: true)
+
+    #expect(model.dashboard.proposals.first?.excludedHunkIDs.isEmpty == true)
+    #expect(model.dashboard.proposals.first?.changeCount == 1)
 }
 
 @Test @MainActor
@@ -713,6 +799,69 @@ func successfulWritesEndEchoSuppressionBeforeTheNextUserEdit() async throws {
     let entry = try #require(model.dashboard.history.first)
     #expect(service.restore(entry) == nil)
     #expect(observer.expectedWrites.isEmpty)
+}
+
+@Test @MainActor
+func applyingThenRestoringRecordsTheWholeOrderedSequence() throws {
+    let bench = try RewriteBench()
+    defer { bench.tearDown() }
+    let model = bench.model(proposals: [bench.proposal])
+    let service = RewriteService(
+        model: model,
+        notes: NoteService(model: model),
+        writer: NoteWriter(
+            snapshots: SnapshotStore(directory: bench.directory.appending(path: "Snapshots"))
+        ),
+        modelEffort: { .base }
+    )
+
+    #expect(service.apply(bench.proposal, as: .review) == nil)
+    let applied = try #require(model.dashboard.history.first)
+
+    #expect(service.restore(applied) == nil)
+
+    #expect(model.dashboard.history.count == 2)
+    let restored = model.dashboard.history[0]
+    #expect(model.dashboard.history[1] == applied)
+    #expect(model.dashboard.history[1].outcome == .applied)
+    #expect(restored.action == .restore(sourceEntryID: applied.id))
+    #expect(restored.previousText == "the note")
+    #expect(restored.appliedText == "teh note")
+    #expect(restored.occurredAt >= applied.occurredAt)
+    #expect(try String(contentsOf: bench.noteURL, encoding: .utf8) == "teh note")
+    #expect(!model.dashboard.isHistoryActionable(applied))
+    #expect(model.dashboard.isHistoryActionable(restored))
+}
+
+@Test @MainActor
+func restoringARestoreRecordsANaturalRedo() throws {
+    let bench = try RewriteBench()
+    defer { bench.tearDown() }
+    let model = bench.model(proposals: [bench.proposal])
+    let service = RewriteService(
+        model: model,
+        notes: NoteService(model: model),
+        writer: NoteWriter(
+            snapshots: SnapshotStore(directory: bench.directory.appending(path: "Snapshots"))
+        ),
+        modelEffort: { .base }
+    )
+
+    #expect(service.apply(bench.proposal, as: .review) == nil)
+    let applied = try #require(model.dashboard.history.first)
+    #expect(service.restore(applied) == nil)
+    let restore = try #require(model.dashboard.history.first)
+
+    #expect(service.restore(restore) == nil)
+
+    #expect(model.dashboard.history.count == 3)
+    let redo = model.dashboard.history[0]
+    #expect(redo.action == .restore(sourceEntryID: restore.id))
+    #expect(redo.previousText == "teh note")
+    #expect(redo.appliedText == "the note")
+    #expect(try String(contentsOf: bench.noteURL, encoding: .utf8) == "the note")
+    #expect(!model.dashboard.isHistoryActionable(restore))
+    #expect(model.dashboard.isHistoryActionable(redo))
 }
 
 @Test @MainActor

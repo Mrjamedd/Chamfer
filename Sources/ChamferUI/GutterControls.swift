@@ -65,6 +65,7 @@ public struct FloatingSettingsButton: View {
                 .padding(-6)
         }
         .buttonStyle(.plain)
+        .chamferFocusableCircle()
         .chamferHoverRingCircle(isHovered)
         .chamferFloat(radius: 14, y: 6, opacity: 0.18)
         .onHover { inside in

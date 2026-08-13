@@ -44,7 +44,7 @@ private struct HidesTitleBar: NSViewRepresentable {
         // is a memory of a size the content no longer wants. Position is worth
         // keeping; the height is not, or a window that was fixed at 672 before
         // it learned to size itself would come back at 672 forever.
-        window.setFrameAutosaveName("")
+        window.setFrameAutosaveName("Chamfer.SettingsWindow")
         if let fitting = window.contentView?.fittingSize, fitting.height > 0 {
             window.setContentSize(fitting)
         }

@@ -10,8 +10,9 @@ public struct VaultActions: Sendable {
     /// what takes a vault from watched-only to actually being worked on.
     public var updateConfiguration: @MainActor (UUID, VaultConfiguration) -> Void
     public var removeVault: @MainActor (UUID) -> Void
-    public var connectVault: @MainActor () -> Void
-    public var reconnectVault: @MainActor (UUID) -> Void
+    /// Returns a local explanation when macOS refused lasting folder access.
+    public var connectVault: @MainActor () -> String?
+    public var reconnectVault: @MainActor (UUID) -> String?
     /// Raises the app target's native note picker and returns vault-relative
     /// paths. The UI target remains independent of AppKit.
     public var chooseExcludedNotes: @MainActor (Vault) -> [String]
@@ -26,8 +27,8 @@ public struct VaultActions: Sendable {
         openNote: @escaping @MainActor (NoteSummary) -> Void = { _ in },
         updateConfiguration: @escaping @MainActor (UUID, VaultConfiguration) -> Void = { _, _ in },
         removeVault: @escaping @MainActor (UUID) -> Void = { _ in },
-        connectVault: @escaping @MainActor () -> Void = {},
-        reconnectVault: @escaping @MainActor (UUID) -> Void = { _ in },
+        connectVault: @escaping @MainActor () -> String? = { nil },
+        reconnectVault: @escaping @MainActor (UUID) -> String? = { _ in nil },
         chooseExcludedNotes: @escaping @MainActor (Vault) -> [String] = { _ in [] },
         updateRules: @escaping @MainActor (UUID, [VaultRule]) -> Void = { _, _ in }
     ) {
@@ -62,6 +63,8 @@ struct VaultsPage: View {
 
     @LegacyState private var expanded: UUID?
     @LegacyState private var picking: Vault?
+    @LegacyState private var connectionNotice: String?
+    @FocusState private var notePickerTrigger: UUID?
 
     /// Opening a vault's settings is the card unfolding, not a page changing.
     ///
@@ -78,23 +81,29 @@ struct VaultsPage: View {
             } else {
                 PageScroll(title: "Vaults", accessory: connectButton) {
                     VStack(alignment: .leading, spacing: Chamfer.Space.loose) {
+                        if let connectionNotice {
+                            InlineNotice(
+                                symbol: "exclamationmark.triangle",
+                                tone: .danger,
+                                text: connectionNotice
+                            )
+                        }
+
                         ForEach(vaults) { vault in
                             VaultRowView(
                                 vault: vault,
                                 activeModelConfigured: activeModelConfigured,
                                 isExpanded: expanded == vault.id,
                                 onToggle: { toggle(vault) },
-                                onOpen: { picking = vault },
+                                onOpen: { presentNotes(in: vault) },
+                                openNoteFocus: $notePickerTrigger,
                                 onRemove: { actions.removeVault(vault.id) },
-                                onReconnect: { actions.reconnectVault(vault.id) },
+                                onReconnect: { reconnect(vault.id) },
                                 onConfigure: { actions.updateConfiguration(vault.id, $0) },
                                 onChooseExcludedNotes: { actions.chooseExcludedNotes(vault) },
                                 onOpenModels: onOpenModels,
                                 onChangeRules: { actions.updateRules(vault.id, $0) }
                             )
-                            if vault.id != vaults.last?.id {
-                                PageRule()
-                            }
                         }
 
                         Text("Each vault is set up on its own. Chamfer never changes a note in a vault you haven't configured.")
@@ -105,27 +114,17 @@ struct VaultsPage: View {
                 }
             }
         }
+        .disabled(picking != nil)
         .overlay {
             if let vault = picking {
                 VaultNotesSheet(
                     vaultName: vault.name,
                     notes: notes(in: vault),
-                    onOpen: { note in
-                        Haptics.commit()
-                        picking = nil
-                        actions.openNote(note)
-                    },
-                    onDismiss: {
-                        Haptics.commit()
-                        picking = nil
-                    }
+                    onOpen: openNote,
+                    onDismiss: { dismissNotes(restoringFocusTo: vault.id) }
                 )
             }
         }
-        .animation(
-            Chamfer.Motion.reduce(Chamfer.Motion.interactive, when: reduceMotion),
-            value: picking?.id
-        )
     }
 
     /// This vault's notes, by containment rather than by any stored vault id —
@@ -141,7 +140,7 @@ struct VaultsPage: View {
         AnyView(
             Button("Connect a vault") {
                 Haptics.pop()
-                actions.connectVault()
+                connect()
             }
             .buttonStyle(ChamferButtonStyle(.secondary))
         )
@@ -149,24 +148,67 @@ struct VaultsPage: View {
 
     private var emptyState: some View {
         VStack(spacing: Chamfer.Space.loose) {
+            if let connectionNotice {
+                InlineNotice(
+                    symbol: "exclamationmark.triangle",
+                    tone: .danger,
+                    text: connectionNotice
+                )
+                .frame(maxWidth: Chamfer.Page.measure)
+            }
             PageMessage(
                 title: "No vaults yet",
-                detail: "Point Chamfer at a folder of Markdown or plain-text notes and it will watch everything inside it, including subfolders."
+                detail: "Point Chamfer at a folder of Markdown or plain-text notes and it will watch everything inside it, including subfolders.",
+                actionTitle: "Connect a vault",
+                action: connect
             )
-            .frame(maxHeight: 200)
-
-            Button("Connect a vault") {
-                Haptics.pop()
-                actions.connectVault()
-            }
-            .buttonStyle(ChamferButtonStyle(.primary))
         }
+        .padding(Chamfer.Space.section)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func connect() {
+        connectionNotice = actions.connectVault()
+    }
+
+    private func reconnect(_ vaultID: UUID) {
+        connectionNotice = actions.reconnectVault(vaultID)
     }
 
     private func toggle(_ vault: Vault) {
         Haptics.pop()
         expanded = expanded == vault.id ? nil : vault.id
+    }
+
+    private func presentNotes(in vault: Vault) {
+        Haptics.pop()
+        withAnimation(sheetArrivalAnimation) {
+            picking = vault
+        }
+    }
+
+    private func openNote(_ note: NoteSummary) {
+        Haptics.commit()
+        withAnimation(sheetDepartureAnimation) {
+            picking = nil
+        }
+        actions.openNote(note)
+    }
+
+    private func dismissNotes(restoringFocusTo vaultID: UUID) {
+        Haptics.commit()
+        withAnimation(sheetDepartureAnimation) {
+            picking = nil
+        }
+        notePickerTrigger = vaultID
+    }
+
+    private var sheetArrivalAnimation: Animation {
+        Chamfer.Motion.reduce(Chamfer.Motion.sheetArrival, when: reduceMotion)
+    }
+
+    private var sheetDepartureAnimation: Animation {
+        Chamfer.Motion.reduce(Chamfer.Motion.sheetDeparture, when: reduceMotion)
     }
 }
 
@@ -182,6 +224,7 @@ private struct VaultRowView: View {
     let isExpanded: Bool
     let onToggle: () -> Void
     let onOpen: () -> Void
+    let openNoteFocus: FocusState<UUID?>.Binding
     let onRemove: () -> Void
     let onReconnect: () -> Void
     let onConfigure: (VaultConfiguration) -> Void
@@ -246,6 +289,20 @@ private struct VaultRowView: View {
             Chamfer.Motion.reduce(VaultsPage.disclosure, when: reduceMotion),
             value: isExpanded
         )
+        .padding(Chamfer.Space.roomy)
+        // The fill and stroke draw their own rounded bounds rather than
+        // clipping the whole row. The controls deliberately sit outside the
+        // disclosure clip above, and a second row-wide clip would flatten the
+        // hover shadows and setup glow that extend beyond their labels.
+        .background {
+            RoundedRectangle(cornerRadius: Chamfer.Radius.medium, style: .continuous)
+                .fill(Chamfer.Palette.pageInset)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: Chamfer.Radius.medium, style: .continuous)
+                .strokeBorder(Chamfer.Palette.pageInsetStroke, lineWidth: 1)
+                .allowsHitTesting(false)
+        }
         .opacity(isReachable ? 1 : 0.82)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
@@ -486,9 +543,10 @@ private struct VaultRowView: View {
             )
             Button("Open a note…", action: onOpen)
                 .buttonStyle(ChamferButtonStyle(.quiet))
+                .focused(openNoteFocus, equals: vault.id)
             Spacer(minLength: 0)
             Button("Disconnect", action: onRemove)
-                .buttonStyle(ChamferButtonStyle(.quiet))
+                .buttonStyle(ChamferButtonStyle(.quiet, tone: .danger))
                 .opacity(isHovered ? 1 : 0)
         }
     }
@@ -689,9 +747,10 @@ private struct VaultRulesEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Chamfer.Space.snug) {
-            PageSectionHeader(
-                title: vault.isNarrowed ? "Folders in use" : "Exclusions",
-                count: vault.rules.isEmpty ? nil : vault.rules.count
+            SectionHeader(
+                vault.isNarrowed ? "Folders in use" : "Exclusions",
+                count: vault.rules.isEmpty ? nil : vault.rules.count,
+                surface: .page
             )
 
             if vault.rules.isEmpty {

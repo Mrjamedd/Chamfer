@@ -67,18 +67,28 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <string>Chamfer reads and tidies the Markdown notes in folders you connect.</string>
   <key>NSDesktopFolderUsageDescription</key>
   <string>Chamfer reads and tidies the Markdown notes in folders you connect.</string>
-$(if [ -n "$FEED_URL" ]; then cat <<FEED
-  <key>SUFeedURL</key><string>$FEED_URL</string>
-  <key>SUPublicEDKey</key><string>$PUBLIC_KEY</string>
-  <key>SUEnableAutomaticChecks</key><true/>
-  <!-- Once a day. An updater that checks on every launch is a network request
-       somebody did not ask for, several times a morning. -->
-  <key>SUScheduledCheckInterval</key><integer>86400</integer>
-FEED
-fi)
 </dict>
 </plist>
 PLIST
+
+# Added after the plist exists rather than interpolated into it.
+#
+# These four keys used to live in a `$(if …; then cat <<FEED … FEED; fi)` nested
+# inside the plist's own heredoc. A heredoc opened inside a command substitution
+# inside another heredoc is at the edge of what the shell will parse, and it
+# stopped parsing entirely — first `bad substitution: no closing ')'`, then, once
+# the substitution was hoisted out, an apostrophe in a comment was read as an
+# unterminated quote. Either way the plist landed on stderr and the bundle was
+# assembled without one. PlistBuddy is already how the icon key is added, it
+# does its own quoting, and it cannot be confused by prose.
+if [ -n "$FEED_URL" ]; then
+  /usr/libexec/PlistBuddy \
+    -c "Add :SUFeedURL string $FEED_URL" \
+    -c "Add :SUPublicEDKey string $PUBLIC_KEY" \
+    -c "Add :SUPromptUserOnFirstLaunch bool true" \
+    -c "Add :SUScheduledCheckInterval integer 86400" \
+    "$CONTENTS/Info.plist" >/dev/null
+fi
 
 if [ -f "$ROOT/Resources/Chamfer.icns" ]; then
   cp "$ROOT/Resources/Chamfer.icns" "$CONTENTS/Resources/"

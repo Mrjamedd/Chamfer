@@ -93,7 +93,10 @@ public final class MenuBarController: NSObject, NSWindowDelegate {
             MenuBarPanel(
                 state: state,
                 actions: actions,
-                onDismiss: { [weak self] in self?.dismiss() }
+                // The SwiftUI content punctuates its own explicit actions.
+                // Outside clicks and status-item toggles still come through
+                // `dismiss()` below, so every route gets one haptic, not two.
+                onDismiss: { [weak self] in self?.dismissFromContent() }
             )
         }
         .preferredColorScheme(.light)
@@ -159,10 +162,18 @@ public final class MenuBarController: NSObject, NSWindowDelegate {
     }
 
     public func dismiss() {
+        dismiss(performHaptic: true)
+    }
+
+    private func dismissFromContent() {
+        dismiss(performHaptic: false)
+    }
+
+    private func dismiss(performHaptic: Bool) {
         guard let panel else { return }
         // Fired at the start of the animation rather than at its end, so the
         // feedback answers the click instead of trailing it.
-        Haptics.commit()
+        if performHaptic { Haptics.commit() }
         self.panel = nil
         if let monitor {
             NSEvent.removeMonitor(monitor)
